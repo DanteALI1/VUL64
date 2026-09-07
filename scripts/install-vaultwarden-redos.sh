@@ -8,7 +8,9 @@
 # Примеры:
 #   sudo ./scripts/install-vaultwarden-redos.sh --fqdn vault.example.local --ip 192.168.1.50
 #   sudo ./scripts/install-vaultwarden-redos.sh --fqdn vault.lan --ip 10.0.0.5 --access http
-#   sudo ./scripts/install-vaultwarden-redos.sh --fqdn vault.lan --ip 10.0.0.5 --cert-mode selfsigned
+#   # если 80/443 заняты (например HashiCorp Vault nginx):
+#   sudo ./scripts/install-vaultwarden-redos.sh --fqdn vault.lan --ip 10.0.0.5 \
+#        --http-port 8080 --https-port 8443 --force
 
 set -euo pipefail
 
@@ -21,6 +23,8 @@ FORCE=0
 INSTALL_ROOT="/opt/vaultwarden"
 IMAGE="vaultwarden/server:latest"
 SIGNUPS_ALLOWED="true"
+HTTP_PORT=80
+HTTPS_PORT=443
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CERT_SCRIPT="${SCRIPT_DIR}/create-vaultwarden-ssl-cert.sh"
 ADMIN_TOKEN=""
@@ -39,7 +43,9 @@ usage() {
 
 Опции:
   --access https|http         https = nginx :443 + TLS (по умолчанию)
-                              http  = только порт 80 (LAN)
+                              http  = только HTTP-порт (LAN)
+  --http-port N               хост-порт HTTP (по умолчанию 80)
+  --https-port N              хост-порт HTTPS (по умолчанию 443)
   --cert-mode ca|selfsigned   тип сертификата при https
   --org NAME                  организация в DN сертификата
   --dir PATH                  каталог установки (по умолчанию /opt/vaultwarden)
@@ -48,12 +54,10 @@ usage() {
   --force                     перезаписать compose/nginx и пересоздать cert
   -h, --help
 
-Что делает скрипт:
-  1) ставит Docker Engine + Compose plugin (если нет)
-  2) создаёт /opt/vaultwarden/{data,ssl,nginx}
-  3) генерирует ADMIN_TOKEN
-  4) при https — создаёт SSL и конфиг nginx
-  5) пишет docker-compose.yml, открывает firewall, запускает стек
+Если порты 80/443 заняты (часто nginx от HashiCorp Vault):
+  sudo ./scripts/install-vaultwarden-redos.sh --fqdn vuln --ip 192.168.1.57 \
+    --http-port 8080 --https-port 8443 --force
+  # UI: https://vuln:8443/
 EOF
 }
 
@@ -66,6 +70,8 @@ while [[ $# -gt 0 ]]; do
     --fqdn) FQDN="${2:-}"; shift 2 ;;
     --ip) IP="${2:-}"; shift 2 ;;
     --access) ACCESS="${2:-}"; shift 2 ;;
+    --http-port) HTTP_PORT="${2:-}"; shift 2 ;;
+    --https-port) HTTPS_PORT="${2:-}"; shift 2 ;;
     --cert-mode) CERT_MODE="${2:-}"; shift 2 ;;
     --org) ORG="${2:-}"; shift 2 ;;
     --dir) INSTALL_ROOT="${2:-}"; shift 2 ;;
@@ -81,6 +87,76 @@ done
 [[ -n "$FQDN" ]] || die "укажите --fqdn"
 case "$ACCESS" in https|http) ;; *) die "--access: https|http" ;; esac
 case "$CERT_MODE" in ca|selfsigned) ;; *) die "--cert-mode: ca|selfsigned" ;; esac
+[[ "$HTTP_PORT" =~ ^[0-9]+$ ]] || die "--http-port должен быть числом"
+[[ "$HTTPS_PORT" =~ ^[0-9]+$ ]] || die "--https-port должен быть числом"
+
+http_url() {
+  local host="${IP:-$FQDN}"
+  if [[ "$HTTP_PORT" == "80" ]]; then
+    printf 'http://%s' "$host"
+  else
+    printf 'http://%s:%s' "$host" "$HTTP_PORT"
+  fi
+}
+
+https_url() {
+  if [[ "$HTTPS_PORT" == "443" ]]; then
+    printf 'https://%s' "$FQDN"
+  else
+    printf 'https://%s:%s' "$FQDN" "$HTTPS_PORT"
+  fi
+}
+
+port_in_use() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -tlnp 2>/dev/null | grep -qE ":${port}\\b" && return 0
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1 && return 0
+  fi
+  return 1
+}
+
+who_holds_port() {
+  local port="$1"
+  if command -v ss >/dev/null 2>&1; then
+    ss -tlnp 2>/dev/null | grep -E ":${port}\\b" || true
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -iTCP:"$port" -sTCP:LISTEN 2>/dev/null || true
+  fi
+}
+
+check_ports() {
+  log "Проверка портов"
+  local conflict=0
+  if port_in_use "$HTTP_PORT"; then
+    printf 'ERROR: порт %s уже занят:\n' "$HTTP_PORT" >&2
+    who_holds_port "$HTTP_PORT" >&2
+    conflict=1
+  fi
+  if [[ "$ACCESS" == "https" ]] && port_in_use "$HTTPS_PORT"; then
+    printf 'ERROR: порт %s уже занят:\n' "$HTTPS_PORT" >&2
+    who_holds_port "$HTTPS_PORT" >&2
+    conflict=1
+  fi
+  if [[ "$conflict" -eq 1 ]]; then
+    cat >&2 <<EOF
+
+Порты заняты (часто это nginx от HashiCorp Vault на :80/:443).
+
+Варианты:
+  1) Остановить конфликтующий сервис, например:
+       systemctl stop nginx
+       # или: docker stop vaultwarden-nginx   # если старый контейнер
+  2) Поставить Vaultwarden на другие порты:
+       sudo $0 --fqdn ${FQDN} ${IP:+--ip $IP} \\
+         --http-port 8080 --https-port 8443 --force
+EOF
+    exit 1
+  fi
+  ok "порты свободны (http=${HTTP_PORT}$([[ "$ACCESS" == https ]] && printf ', https=%s' "$HTTPS_PORT"))"
+}
 
 pkg_install() {
   if command -v dnf >/dev/null 2>&1; then
@@ -120,6 +196,12 @@ prepare_dirs() {
 make_admin_token() {
   log "3/7 ADMIN_TOKEN"
   if [[ -z "$ADMIN_TOKEN" ]]; then
+    if [[ -f "${INSTALL_ROOT}/admin-token.txt" && "$FORCE" -ne 1 ]]; then
+      ADMIN_TOKEN="$(tr -d '\n' < "${INSTALL_ROOT}/admin-token.txt")"
+      ADMIN_TOKEN_FILE="${INSTALL_ROOT}/admin-token.txt"
+      ok "использован существующий ${ADMIN_TOKEN_FILE}"
+      return
+    fi
     command -v openssl >/dev/null || pkg_install openssl
     ADMIN_TOKEN="$(openssl rand -base64 48)"
   fi
@@ -137,6 +219,10 @@ setup_certs() {
   fi
   log "4/7 SSL-сертификаты"
   [[ -x "$CERT_SCRIPT" ]] || die "нет ${CERT_SCRIPT}"
+  if [[ -f "${INSTALL_ROOT}/ssl/fullchain.pem" && -f "${INSTALL_ROOT}/ssl/privkey.pem" && "$FORCE" -ne 1 ]]; then
+    ok "сертификаты уже есть (перевыпуск: --force)"
+    return
+  fi
   local args=(--fqdn "$FQDN" --mode "$CERT_MODE" --org "$ORG" --install-dir "${INSTALL_ROOT}/ssl")
   [[ -n "$IP" ]] && args+=(--ip "$IP")
   [[ "$FORCE" -eq 1 ]] && args+=(--force)
@@ -147,8 +233,8 @@ setup_certs() {
 }
 
 write_http_compose() {
-  local domain="http://${FQDN}"
-  [[ -n "$IP" ]] && domain="http://${IP}"
+  local domain
+  domain="$(http_url)"
 
   cat > "${INSTALL_ROOT}/docker-compose.yml" <<EOF
 services:
@@ -163,13 +249,15 @@ services:
     volumes:
       - ./data:/data
     ports:
-      - "80:80"
+      - "${HTTP_PORT}:80"
 EOF
 }
 
 write_https_stack() {
-  local domain="https://${FQDN}"
+  local domain
+  domain="$(https_url)"
 
+  # Внутри контейнера nginx всегда слушает 80/443; на хост маппятся HTTP_PORT/HTTPS_PORT
   cat > "${INSTALL_ROOT}/nginx/nginx.conf" <<EOF
 worker_processes auto;
 events { worker_connections 1024; }
@@ -227,8 +315,8 @@ services:
     depends_on:
       - vaultwarden
     ports:
-      - "80:80"
-      - "443:443"
+      - "${HTTP_PORT}:80"
+      - "${HTTPS_PORT}:443"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/certs:ro
@@ -250,7 +338,7 @@ write_configs() {
     else
       write_https_stack
     fi
-    ok "конфиги записаны"
+    ok "конфиги записаны (host ports http=${HTTP_PORT}$([[ "$ACCESS" == https ]] && printf ' https=%s' "$HTTPS_PORT"))"
   fi
 }
 
@@ -261,8 +349,18 @@ setup_firewall() {
     return
   fi
   systemctl enable --now firewalld 2>/dev/null || true
-  firewall-cmd --permanent --add-service=http || true
-  [[ "$ACCESS" == "https" ]] && firewall-cmd --permanent --add-service=https || true
+  if [[ "$HTTP_PORT" == "80" ]]; then
+    firewall-cmd --permanent --add-service=http || true
+  else
+    firewall-cmd --permanent --add-port="${HTTP_PORT}/tcp" || true
+  fi
+  if [[ "$ACCESS" == "https" ]]; then
+    if [[ "$HTTPS_PORT" == "443" ]]; then
+      firewall-cmd --permanent --add-service=https || true
+    else
+      firewall-cmd --permanent --add-port="${HTTPS_PORT}/tcp" || true
+    fi
+  fi
   firewall-cmd --reload || true
   ok "правила применены"
 }
@@ -270,6 +368,8 @@ setup_firewall() {
 start_stack() {
   log "7/7 Запуск контейнеров"
   cd "$INSTALL_ROOT"
+  # убрать полузапущенный стек от прошлой попытки
+  docker compose down 2>/dev/null || true
   docker compose pull
   docker compose up -d
   sleep 2
@@ -280,9 +380,9 @@ start_stack() {
 print_summary() {
   local url
   if [[ "$ACCESS" == "http" ]]; then
-    url="http://${IP:-$FQDN}"
+    url="$(http_url)"
   else
-    url="https://${FQDN}"
+    url="$(https_url)"
   fi
 
   cat <<EOF
@@ -294,6 +394,7 @@ print_summary() {
   Каталог:  ${INSTALL_ROOT}
   Данные:   ${INSTALL_ROOT}/data   (SQLite внутри)
   Доступ:   ${ACCESS}
+  Порты:    HTTP ${HTTP_PORT}$([[ "$ACCESS" == https ]] && printf ' / HTTPS %s' "$HTTPS_PORT")
   UI:       ${url}/
   Admin:    ${url}/admin
   Token:    ${ADMIN_TOKEN_FILE}
@@ -323,6 +424,7 @@ main() {
   setup_certs
   write_configs
   setup_firewall
+  check_ports
   start_stack
   print_summary
 }

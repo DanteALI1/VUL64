@@ -38,6 +38,12 @@ sudo ./scripts/install-vaultwarden-redos.sh \
   --fqdn vault.example.local \
   --ip 192.168.1.50 \
   --access http
+
+# Если 80/443 заняты (например HashiCorp Vault) — другие порты:
+sudo ./scripts/install-vaultwarden-redos.sh \
+  --fqdn vault.example.local \
+  --ip 192.168.1.50 \
+  --http-port 8080 --https-port 8443 --force
 ```
 
 Скрипт:
@@ -339,11 +345,51 @@ http://192.168.1.50
 
 | Симптом | Что проверить |
 |---|---|
+| Порт занят (`address already in use`) | На хосте уже слушают 80/443 (часто nginx HashiCorp Vault). См. ниже |
 | `paths must be canonical` | URL с `//ui/` — откройте `https://HOST/` или `https://HOST/ui` **без** двойного слэша |
 | Браузер ругается на cert | self-signed — ожидаемо; импортируйте CA или используйте `--mode ca` |
 | Клиент не логинится | `DOMAIN` = тот же URL, что в клиенте (`http://` vs `https://`) |
 | Порт занят | `ss -tlnp \| grep -E ':80\|:443'` |
 | Нет данных после recreate | том `./data` не удаляйте |
+
+### Порты 80/443 уже заняты
+
+Типичная ошибка:
+
+```text
+failed to bind host port 0.0.0.0:80/tcp: address already in use
+```
+
+Проверка:
+
+```bash
+ss -tlnp | grep -E ':80|:443'
+```
+
+**Вариант 1 — другие порты для Vaultwarden** (Vault на 80/443 оставляете):
+
+```bash
+sudo ./scripts/install-vaultwarden-redos.sh \
+  --fqdn vuln --ip 192.168.1.57 \
+  --http-port 8080 --https-port 8443 --force
+```
+
+UI: `https://vuln:8443/`
+
+**Вариант 2 — освободить 80/443** (остановить nginx Vault / старый контейнер):
+
+```bash
+sudo systemctl stop nginx
+# или
+sudo docker stop vaultwarden-nginx
+sudo ss -tlnp | grep -E ':80|:443'
+```
+
+Затем снова:
+
+```bash
+cd /opt/vaultwarden && sudo docker compose up -d
+```
 
 ---
 
