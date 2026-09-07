@@ -4,4 +4,6 @@
 
 ## Документы
 
-- [HashiCorp Vault на РЕД ОС: веб-UI (порты 80 / 443)](docs/vault-redos-web.md) — установка, init/unseal, секреты; HTTP :80 / HTTPS :443; [SSL по шагам 1–9](docs/vault-redos-web.md#создание-своего-ssl-сертификата) или скрипт [`scripts/create-vault-ssl-cert.sh`](scripts/create-vault-ssl-cert.sh)
+- [HashiCorp Vault на РЕД ОС: веб-UI (порты 80 / 443)](docs/vault-redos-web.md) — установка, init/unseal, секреты; HTTP :80 / HTTPS :443
+- **Скрипт «всё сразу»:** [`scripts/install-vault-redos.sh`](scripts/install-vault-redos.sh) — ставит Vault, nginx, SSL, firewall и запускает UI
+- Только сертификат: [`scripts/create-vault-ssl-cert.sh`](scripts/create-vault-ssl-cert.sh)

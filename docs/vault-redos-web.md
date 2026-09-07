@@ -23,7 +23,53 @@ Vault — клиент-серверное хранилище секретов (�
 
 Для HTTPS сначала подготовьте сертификат по шагам 1–8 (или одной командой скриптом): [создание своего SSL-сертификата](#создание-своего-ssl-сертификата).
 
+Либо поставьте всё сразу: [готовый скрипт установки](#готовый-скрипт-установить-всё-сразу).
+
 > **Важно:** HTTP (порт 80) передаёт токены и секреты открытым текстом. В интернет без TLS не выставляйте. Для продакшена используйте вариант B.
+
+---
+
+## Готовый скрипт: установить всё сразу
+
+Одна команда ставит Vault, создаёт SSL-сертификаты, настраивает nginx (HTTPS), firewall и запускает службы.
+
+```bash
+# из корня репозитория на сервере РЕД ОС
+chmod +x scripts/install-vault-redos.sh scripts/create-vault-ssl-cert.sh
+
+sudo ./scripts/install-vault-redos.sh \
+  --fqdn vault.example.local \
+  --ip 192.168.1.50 \
+  --init
+```
+
+Что делает [`scripts/install-vault-redos.sh`](../scripts/install-vault-redos.sh):
+
+1. Ставит пакеты (`vault`, `openssl`, `nginx`, …)  
+2. Создаёт пользователя/каталоги, `vault.hcl`, systemd unit  
+3. Выпускает и ставит SSL (через [`create-vault-ssl-cert.sh`](../scripts/create-vault-ssl-cert.sh))  
+4. Настраивает nginx :443 и firewall  
+5. Запускает Vault  
+6. С `--init` — `vault operator init` + unseal, ключи в `/root/vault-init-KEYS.txt` (chmod 600)
+
+Другие режимы:
+
+```bash
+# HTTP без TLS (только доверенная LAN)
+sudo ./scripts/install-vault-redos.sh --fqdn vault.example.local --ip 192.168.1.50 --access http
+
+# Vault сам слушает 443 (без nginx)
+sudo ./scripts/install-vault-redos.sh --fqdn vault.example.local --ip 192.168.1.50 --access direct-https --init
+
+# короткий self-signed вместо своей CA
+sudo ./scripts/install-vault-redos.sh --fqdn vault.example.local --ip 192.168.1.50 --cert-mode selfsigned --init
+```
+
+Справка: `./scripts/install-vault-redos.sh --help`.
+
+После установки UI: `https://vault.example.local` (или `http://…` при `--access http`).
+
+Ниже — ручная установка по шагам, если скрипт не используете.
 
 ---
 
@@ -1105,11 +1151,9 @@ curl -skI https://127.0.0.1/ui/ | head
   → Вариант A: nginx :80 → Vault :8200 → http://IP/
 
 Нужен нормальный HTTPS в браузере?
-  → Сертификат: sudo ./scripts/create-vault-ssl-cert.sh --fqdn ... --ip ...
-    (или вручную шаги 1–8)
-  → Вариант B: nginx :443 + cert → Vault :8200 → https://FQDN/
+  → sudo ./scripts/install-vault-redos.sh --fqdn ... --ip ... --init
+    (или вручную: сертификат шаги 1–8 → вариант B)
 
 Без nginx, один процесс?
-  → Сертификат: sudo ./scripts/create-vault-ssl-cert.sh ... --for-vault-user
-  → Вариант C: listener на :80 или :443 (+ CAP_NET_BIND_SERVICE)
+  → sudo ./scripts/install-vault-redos.sh ... --access direct-https --init
 ```
