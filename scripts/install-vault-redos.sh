@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 # Полная установка HashiCorp Vault на РЕД ОС 8:
-#   пакеты → каталоги/systemd → SSL-сертификаты → nginx → firewall → запуск
-#   (опционально: vault operator init)
+#   пакеты → каталоги/systemd → SSL → nginx → firewall → запуск → init/unseal
 #
 # Соответствует docs/vault-redos-web.md (боевой режим + вариант A или B).
 #
-# Пример (HTTPS, рекомендуется):
+# Пример (HTTPS + init/unseal сразу, рекомендуется):
 #   sudo ./scripts/install-vault-redos.sh --fqdn vault.example.local --ip 192.168.1.50
 #
 # HTTP без TLS (только LAN):
 #   sudo ./scripts/install-vault-redos.sh --fqdn vault.example.local --ip 192.168.1.50 --access http
 #
-# Сразу инициализировать Vault и сохранить ключи:
-#   sudo ./scripts/install-vault-redos.sh --fqdn vault.example.local --ip 192.168.1.50 --init
+# Без автоматического init:
+#   sudo ./scripts/install-vault-redos.sh --fqdn vault.example.local --ip 192.168.1.50 --no-init
 
 set -euo pipefail
 
@@ -20,7 +19,7 @@ FQDN=""
 IP=""
 ACCESS="https"          # https | http | direct-https
 CERT_MODE="ca"          # ca | selfsigned
-DO_INIT=0
+DO_INIT=1               # по умолчанию: init + unseal сразу
 FORCE=0
 ORG="MyOrg"
 KEY_SHARES=5
@@ -47,7 +46,8 @@ usage() {
                               direct-https  = Vault сам на :443 (вариант C)
   --cert-mode ca|selfsigned   тип сертификата при https/direct-https (по умолчанию ca)
   --org NAME                  организация в DN сертификата
-  --init                      выполнить vault operator init и сохранить ключи
+  --init                      init + unseal сразу (по умолчанию ВКЛЮЧЕНО)
+  --no-init                   не делать vault operator init / unseal
   --init-file PATH            куда писать unseal/root (по умолчанию /root/vault-init-KEYS.txt)
   --force                     перезаписать конфиги и пересоздать сертификаты
   -h, --help                  справка
@@ -58,9 +58,8 @@ usage() {
   3) для HTTPS — создаёт и ставит SSL (через create-vault-ssl-cert.sh)
   4) настраивает nginx и firewall
   5) запускает службы
-  6) при --init — инициализирует Vault (ключи → файл с chmod 600)
-
-После установки почти всегда нужен unseal (если не использовали --init + сохранили ключи).
+  6) инициализирует Vault, делает unseal ×3, сохраняет ключи (chmod 600)
+     (отключить: --no-init)
 EOF
 }
 
@@ -77,6 +76,7 @@ while [[ $# -gt 0 ]]; do
     --cert-mode) CERT_MODE="${2:-}"; shift 2 ;;
     --org) ORG="${2:-}"; shift 2 ;;
     --init) DO_INIT=1; shift ;;
+    --no-init) DO_INIT=0; shift ;;
     --init-file) INIT_FILE="${2:-}"; shift 2 ;;
     --force) FORCE=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -393,9 +393,10 @@ start_vault() {
 
 maybe_init() {
   if [[ "$DO_INIT" -ne 1 ]]; then
+    log "Init/unseal пропущен (--no-init)"
     return
   fi
-  log "Инициализация Vault (--init)"
+  log "9/9 Инициализация и unseal Vault"
   export VAULT_ADDR='http://127.0.0.1:8200'
   if [[ "$ACCESS" == "direct-https" ]]; then
     export VAULT_ADDR="https://127.0.0.1:443"
@@ -406,6 +407,16 @@ maybe_init() {
   st="$(vault status 2>&1 || true)"
   if echo "$st" | grep -qi 'Initialized.*true'; then
     ok "уже инициализирован — init пропущен"
+    # если sealed — попробуем unseal из сохранённого файла
+    if echo "$st" | grep -qi 'Sealed.*true' && [[ -f "$INIT_FILE" ]]; then
+      log "Vault sealed — unseal из ${INIT_FILE}"
+      mapfile -t keys < <(grep -E '^Unseal Key' "$INIT_FILE" | awk '{print $NF}' | head -n "$KEY_THRESHOLD")
+      local k
+      for k in "${keys[@]}"; do
+        vault operator unseal "$k" >/dev/null || true
+      done
+      vault status || true
+    fi
     return
   fi
 
@@ -424,17 +435,28 @@ maybe_init() {
   done
   vault status || true
 
+  local root
+  root="$(grep -E '^Initial Root Token:' "$INIT_FILE" | awk '{print $NF}' || true)"
+  if [[ -n "$root" ]]; then
+    vault login "$root" >/dev/null || true
+  fi
+
   ok "ключи сохранены в ${INIT_FILE}"
-  ok "Vault распечатан; Root Token: см. ${INIT_FILE}"
-  printf '\nВнимание: файл %s содержит секреты. Скопируйте в сейф и удалите с диска.\n' "$INIT_FILE"
+  ok "Vault инициализирован и распечатан (Sealed: false)"
+  printf '\nВнимание: файл %s содержит Unseal Keys и Root Token.\n' "$INIT_FILE"
+  printf 'Скопируйте в сейф, затем удалите с диска: shred -u %s\n' "$INIT_FILE"
 }
 
 print_summary() {
-  local url
+  local url root
   case "$ACCESS" in
     http) url="http://${FQDN}" ;;
     *) url="https://${FQDN}" ;;
   esac
+  root=""
+  if [[ -f "$INIT_FILE" ]]; then
+    root="$(grep -E '^Initial Root Token:' "$INIT_FILE" | awk '{print $NF}' || true)"
+  fi
 
   cat <<EOF
 
@@ -454,11 +476,23 @@ EOF
 
   if [[ "$DO_INIT" -eq 1 && -f "$INIT_FILE" ]]; then
     cat <<EOF
-  Init:     ${INIT_FILE} (Unseal Keys + Root Token)
+  Ключи:    ${INIT_FILE}
+            (Unseal Keys + Root Token, chmod 600)
+
+  Вход в UI:
+    1) откройте ${url}/ui/
+    2) Method: Token
+    3) Token:  ${root:-см. файл ключей}
+    4) Sign in
+
+  После reboot снова нужен unseal (3 ключа из файла):
+    export VAULT_ADDR='http://127.0.0.1:8200'
+    vault operator unseal   # ×3
+
 EOF
   else
     cat <<EOF
-  Далее init/unseal (если ещё не делали):
+  Init не выполнялся (--no-init). Сделайте вручную:
     export VAULT_ADDR='http://127.0.0.1:8200'
     vault operator init -key-shares=5 -key-threshold=3
     vault operator unseal   # ×3
