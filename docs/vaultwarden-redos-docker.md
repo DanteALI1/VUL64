@@ -59,7 +59,77 @@ sudo ./scripts/install-vaultwarden-redos.sh \
 
 Справка: `./scripts/install-vaultwarden-redos.sh --help`.
 
-Ниже — ручная установка по шагам.
+---
+
+## Готовые сертификаты от УЦ (выпустили вам)
+
+Если сертификат выдаёт корпоративный УЦ / Let's Encrypt / провайдер — **не генерируйте self-signed**. Нужны файлы:
+
+| Файл | Что это | Примеры имён |
+|---|---|---|
+| Сертификат сервера | публичная часть | `server.crt`, `domain.crt`, `cert.pem` |
+| Закрытый ключ | секрет | `server.key`, `privkey.pem` |
+| Цепочка CA (часто) | intermediate + root | `ca-bundle.crt`, `chain.pem`, `fullchain.pem` |
+
+> Ключ никому не отправляйте и не кладите в git.
+
+### Способ 1. Только положить сертификаты
+
+```bash
+chmod +x scripts/install-existing-ssl-cert.sh
+
+sudo ./scripts/install-existing-ssl-cert.sh \
+  --target vaultwarden \
+  --cert /path/to/server.crt \
+  --key  /path/to/server.key \
+  --chain /path/to/ca-bundle.crt \
+  --force --restart
+```
+
+Скрипт проверит, что cert и key совпадают, и запишет:
+
+- `/opt/vaultwarden/ssl/fullchain.pem`
+- `/opt/vaultwarden/ssl/privkey.pem`
+
+`--target vault` — для HashiCorp Vault (`/etc/ssl/certs/vault.crt`).  
+`--target both` — сразу для обоих.
+
+### Способ 2. Установка Vaultwarden сразу с вашими cert
+
+```bash
+sudo ./scripts/install-vaultwarden-redos.sh \
+  --fqdn vault.company.ru \
+  --ip 192.168.1.57 \
+  --cert-file /path/to/server.crt \
+  --key-file  /path/to/server.key \
+  --chain-file /path/to/ca-bundle.crt \
+  --force
+```
+
+`--fqdn` должен совпадать с именем в сертификате (CN/SAN). Иначе браузер/клиент Bitwarden будут ругаться.
+
+Если УЦ уже отдал один `fullchain.pem` (сервер + цепочка), `--chain-file` не нужен:
+
+```bash
+sudo ./scripts/install-vaultwarden-redos.sh \
+  --fqdn vault.company.ru \
+  --ip 192.168.1.57 \
+  --cert-file /path/to/fullchain.pem \
+  --key-file  /path/to/privkey.pem \
+  --force
+```
+
+### Проверка после установки
+
+```bash
+openssl x509 -in /opt/vaultwarden/ssl/fullchain.pem -noout -subject -issuer -dates
+cd /opt/vaultwarden && sudo docker compose ps
+curl -sI https://vault.company.ru:8443/ | head
+```
+
+В клиенте Bitwarden укажите тот же URL, что в `DOMAIN` (с портом, если не 443).
+
+Ниже — ручная установка по шагам (без готовых cert от УЦ).
 
 ---
 
