@@ -21,6 +21,8 @@ Vault — клиент-серверное хранилище секретов (�
 | [C. Vault слушает 80/443 сам](#вариант-c-vault-слушает-80-или-443-напрямую) | **80** или **443** | по конфигу | без reverse proxy |
 | [Dev-режим](#быстрый-старт-режим-разработки) | 8200 | нет | только локальная разработка |
 
+Для HTTPS сначала подготовьте сертификат: [создание своего SSL-сертификата](#создание-своего-ssl-сертификата).
+
 > **Важно:** HTTP (порт 80) передаёт токены и секреты открытым текстом. В интернет без TLS не выставляйте. Для продакшена используйте вариант B.
 
 ---
@@ -344,37 +346,29 @@ curl -sI http://127.0.0.1/ui/ | head
 
 ---
 
-## Вариант B: HTTPS, порт 443 (через nginx)
+## Создание своего SSL-сертификата
 
-Схема: браузер → **nginx :443 (TLS)** → Vault `127.0.0.1:8200` (без TLS на localhost).
+Для вариантов **B** и **C (HTTPS)** нужен сертификат и закрытый ключ. Ниже — как создать **свой** (self-signed / своя мини-CA). Готовый сертификат от Let's Encrypt или корпоративного CA тоже подойдёт: просто положите файлы в пути из шага «Установка на сервер».
 
-Рекомендуемый способ для веб-доступа.
-
-### B1. DNS / hosts
+Нужен пакет OpenSSL:
 
 ```bash
-echo '<IP_СЕРВЕРА> vault.example.local' | sudo tee -a /etc/hosts
+sudo dnf install -y openssl
+openssl version
 ```
 
-Замените `vault.example.local` на ваш FQDN.
+Замените `vault.example.local` и IP на свои значения везде ниже.
 
-### B2. Сертификаты
+### Способ 1. Простой self-signed (один файл = и «CA», и сервер)
 
-**Вариант со своим сертификатом** — положите файлы:
-
-```bash
-sudo mkdir -p /etc/ssl/private
-sudo cp vault.crt /etc/ssl/certs/vault.crt
-sudo cp vault.key /etc/ssl/private/vault.key
-sudo chmod 644 /etc/ssl/certs/vault.crt
-sudo chmod 600 /etc/ssl/private/vault.key
-```
-
-**Вариант self-signed (лаборатория)** — по мотивам [БЗ РЕД ОС: SSL для веб-серверов](https://redos.red-soft.ru/base/redos-8_0/8_0-security/8_0-ssl/8_0-ssl-for-webserv/):
+Быстро для лаборатории. Браузер покажет предупреждение, пока не добавите сертификат в доверенные.
 
 ```bash
-cd /tmp
-openssl genpkey -algorithm RSA -out vault.key
+mkdir -p ~/vault-certs && cd ~/vault-certs
+
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out vault.key
+chmod 600 vault.key
+
 cat > vault.cnf <<'EOF'
 [ req ]
 default_bits       = 2048
@@ -397,20 +391,226 @@ subjectAltName   = @alt_names
 
 [ alt_names ]
 DNS.1 = vault.example.local
+DNS.2 = localhost
 IP.1  = 127.0.0.1
 # IP.2 = 192.168.1.50
 EOF
 
-openssl req -new -x509 -days 365 -key vault.key -config vault.cnf -extensions req_ext -out vault.crt
+openssl req -new -x509 -days 825 -key vault.key \
+  -config vault.cnf -extensions req_ext -out vault.crt
 
-sudo mkdir -p /etc/ssl/private
-sudo cp vault.crt /etc/ssl/certs/vault.crt
-sudo cp vault.key /etc/ssl/private/vault.key
+openssl x509 -in vault.crt -noout -subject -dates -ext subjectAltName
+```
+
+Итог в `~/vault-certs/`:
+
+| Файл | Назначение |
+|---|---|
+| `vault.crt` | сертификат сервера |
+| `vault.key` | закрытый ключ (никому не отдавать) |
+
+### Способ 2. Своя CA + сертификат сервера (рекомендуется для LAN)
+
+Сначала создаёте свой корневой CA, затем им подписываете сертификат Vault. На клиентах достаточно один раз доверить **только CA** — предупреждения в браузере исчезнут.
+
+#### 2.1. Корневой CA
+
+```bash
+mkdir -p ~/vault-certs/ca && cd ~/vault-certs/ca
+
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out ca.key
+chmod 600 ca.key
+
+cat > ca.cnf <<'EOF'
+[ req ]
+default_bits       = 4096
+distinguished_name = req_distinguished_name
+x509_extensions    = v3_ca
+prompt             = no
+
+[ req_distinguished_name ]
+C  = RU
+ST = Region
+L  = City
+O  = MyOrg Vault CA
+CN = MyOrg Vault Root CA
+
+[ v3_ca ]
+basicConstraints = critical, CA:TRUE, pathlen:0
+keyUsage         = critical, keyCertSign, cRLSign
+subjectKeyIdentifier = hash
+EOF
+
+openssl req -new -x509 -days 3650 -key ca.key -config ca.cnf -out ca.crt
+openssl x509 -in ca.crt -noout -subject -dates
+```
+
+#### 2.2. Ключ и CSR сервера Vault
+
+```bash
+cd ~/vault-certs
+
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out vault.key
+chmod 600 vault.key
+
+cat > vault.cnf <<'EOF'
+[ req ]
+default_bits       = 2048
+distinguished_name = req_distinguished_name
+req_extensions     = req_ext
+prompt             = no
+
+[ req_distinguished_name ]
+C  = RU
+ST = Region
+L  = City
+O  = MyOrg
+CN = vault.example.local
+
+[ req_ext ]
+basicConstraints = CA:FALSE
+keyUsage         = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName   = @alt_names
+
+[ alt_names ]
+DNS.1 = vault.example.local
+DNS.2 = localhost
+IP.1  = 127.0.0.1
+# IP.2 = 192.168.1.50
+EOF
+
+openssl req -new -key vault.key -config vault.cnf -out vault.csr
+```
+
+#### 2.3. Подпись сертификата сервера своим CA
+
+```bash
+cd ~/vault-certs
+
+cat > vault-sign.cnf <<'EOF'
+basicConstraints = CA:FALSE
+keyUsage         = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName   = @alt_names
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer
+
+[ alt_names ]
+DNS.1 = vault.example.local
+DNS.2 = localhost
+IP.1  = 127.0.0.1
+# IP.2 = 192.168.1.50
+EOF
+
+openssl x509 -req -in vault.csr -CA ca/ca.crt -CAkey ca/ca.key \
+  -CAcreateserial -out vault.crt -days 825 \
+  -extfile vault-sign.cnf
+
+# цепочка для nginx (сервер + CA), если потребуется
+cat vault.crt ca/ca.crt > vault-fullchain.crt
+
+openssl verify -CAfile ca/ca.crt vault.crt
+openssl x509 -in vault.crt -noout -subject -issuer -dates -ext subjectAltName
+```
+
+Итог:
+
+| Файл | Назначение |
+|---|---|
+| `ca/ca.crt` | корневой CA — его ставят в доверенные на клиентах |
+| `ca/ca.key` | ключ CA — хранить только офлайн / в сейфе |
+| `vault.crt` | сертификат сервера |
+| `vault.key` | ключ сервера |
+| `vault-fullchain.crt` | сервер + CA (удобно для nginx) |
+
+### Установка сертификата на сервер Vault
+
+Для **способа 1** и **способа 2**:
+
+```bash
+sudo mkdir -p /etc/ssl/certs /etc/ssl/private
+
+# сертификат сервера
+sudo cp ~/vault-certs/vault.crt /etc/ssl/certs/vault.crt
+# при способе 2 можно отдать nginx полную цепочку:
+# sudo cp ~/vault-certs/vault-fullchain.crt /etc/ssl/certs/vault.crt
+
+sudo cp ~/vault-certs/vault.key /etc/ssl/private/vault.key
+sudo chmod 644 /etc/ssl/certs/vault.crt
 sudo chmod 600 /etc/ssl/private/vault.key
+sudo chown root:root /etc/ssl/private/vault.key
+```
 
-# доверие в системе (опционально)
-sudo cp vault.crt /etc/pki/ca-trust/source/anchors/
+Для варианта **C** (Vault слушает 443 сам) ключ должен читать пользователь `vault`:
+
+```bash
+sudo chown root:vault /etc/ssl/private/vault.key
+sudo chmod 640 /etc/ssl/private/vault.key
+```
+
+### Доверие сертификату на клиентах
+
+**Способ 1** — в доверенные кладут сам `vault.crt`.  
+**Способ 2** — в доверенные кладут только `ca/ca.crt` (предпочтительно).
+
+На РЕД ОС / RHEL-подобных:
+
+```bash
+# способ 1:
+# sudo cp ~/vault-certs/vault.crt /etc/pki/ca-trust/source/anchors/vault.crt
+# способ 2:
+sudo cp ~/vault-certs/ca/ca.crt /etc/pki/ca-trust/source/anchors/vault-ca.crt
+
 sudo update-ca-trust extract
+```
+
+После этого CLI Vault обычно работает без `VAULT_SKIP_VERIFY=1`:
+
+```bash
+export VAULT_ADDR='https://vault.example.local'
+vault status
+```
+
+В браузере: перезапустите браузер; при необходимости импортируйте CA вручную в хранилище доверенных корневых сертификатов. На Windows/macOS — «Доверенные корневые центры сертификации» / Keychain.
+
+> Не публикуйте `*.key` и не коммитьте их в git. Self-signed и своя CA подходят для LAN/лабы; в интернет лучше Let's Encrypt или корпоративный CA.
+
+Дальше — [вариант B](#вариант-b-https-порт-443-через-nginx) или [вариант C2](#c2-https-на-порту-443).
+
+---
+
+## Вариант B: HTTPS, порт 443 (через nginx)
+
+Схема: браузер → **nginx :443 (TLS)** → Vault `127.0.0.1:8200` (без TLS на localhost).
+
+Рекомендуемый способ для веб-доступа.
+
+### B1. DNS / hosts
+
+```bash
+echo '<IP_СЕРВЕРА> vault.example.local' | sudo tee -a /etc/hosts
+```
+
+Замените `vault.example.local` на ваш FQDN.
+
+### B2. Сертификаты
+
+Сначала создайте свой сертификат по разделу [Создание своего SSL-сертификата](#создание-своего-ssl-сертификата) (способ 1 или 2) **или** положите уже имеющиеся файлы:
+
+```bash
+sudo mkdir -p /etc/ssl/certs /etc/ssl/private
+sudo cp /path/to/your.crt /etc/ssl/certs/vault.crt
+sudo cp /path/to/your.key /etc/ssl/private/vault.key
+sudo chmod 644 /etc/ssl/certs/vault.crt
+sudo chmod 600 /etc/ssl/private/vault.key
+```
+
+Проверка, что файлы на месте:
+
+```bash
+sudo ls -l /etc/ssl/certs/vault.crt /etc/ssl/private/vault.key
+openssl x509 -in /etc/ssl/certs/vault.crt -noout -subject -dates
 ```
 
 ### B3. nginx: HTTP → HTTPS и прокси на Vault
@@ -549,6 +749,8 @@ sudo firewall-cmd --reload
 UI: `http://vault.example.local` или `http://IP_СЕРВЕРА`.
 
 ### C2. HTTPS на порту 443
+
+Сначала подготовьте `vault.crt` / `vault.key` по разделу [Создание своего SSL-сертификата](#создание-своего-ssl-сертификата) и установите их в `/etc/ssl/...`.
 
 ```hcl
 ui = true
@@ -758,7 +960,7 @@ curl -skI https://127.0.0.1/ui/ | head
 |---|---|
 | UI не открывается | `ui = true`, служба vault запущена, unseal выполнен |
 | 502 Bad Gateway (nginx) | Vault слушает `127.0.0.1:8200`, `setsebool -P httpd_can_network_connect 1` |
-| Браузер ругается на сертификат | self-signed — ожидаемо; импортируйте CA или используйте доверенный cert |
+| Браузер ругается на сертификат | self-signed — ожидаемо; см. [доверие на клиентах](#доверие-сертификату-на-клиентах) или используйте способ 2 (своя CA) |
 | `permission denied` на :80/:443 | нет `CAP_NET_BIND_SERVICE` у unit-файла |
 | `Sealed: true` после reboot | выполните `vault operator unseal` (× threshold) |
 | CLI: certificate signed by unknown authority | `update-ca-trust` или временно `VAULT_SKIP_VERIFY=1` |
@@ -785,6 +987,7 @@ curl -skI https://127.0.0.1/ui/ | head
   → Вариант A: nginx :80 → Vault :8200 → http://IP/
 
 Нужен нормальный HTTPS в браузере?
+  → Создайте сертификат (раздел «Создание своего SSL-сертификата»)
   → Вариант B: nginx :443 + cert → Vault :8200 → https://FQDN/
 
 Без nginx, один процесс?
