@@ -1,33 +1,22 @@
-# Установка Vaultwarden на РЕД ОС (Docker + HTTPS)
+# Установка Vaultwarden на РЕД ОС (Docker)
 
-Пошаговая инструкция по развёртыванию [Vaultwarden](https://github.com/dani-garcia/vaultwarden) на сервере **РЕД ОС** через Docker с доступом по **443** и **самоподписанным сертификатом**.
+Пошаговая инструкция по развёртыванию [Vaultwarden](https://github.com/dani-garcia/vaultwarden) на сервере **РЕД ОС** через Docker.
 
 Vaultwarden — неофициальный совместимый с Bitwarden сервер паролей.
 
-Рекомендуемый способ: **Vaultwarden + nginx** (reverse proxy) с вашим TLS-сертификатом.
+Выберите вариант:
+
+| Вариант | Порт | Сертификат | Когда использовать |
+|---|---|---|---|
+| [A. HTTP без HTTPS](#вариант-a-http-порт-80-без-https) | **80** | не нужен | локальная сеть / тест, нет сертификата |
+| [B. HTTPS + self-signed](#вариант-b-https-порт-443-самоподписанный-сертификат) | **443** | свой `.crt` / `.key` | нужен HTTPS |
+| [C. HTTPS без nginx](#вариант-c-https-без-nginx-rocket_tls) | **443** | свой `.crt` / `.key` | простой TLS прямо в Vaultwarden |
+
+> **Важно:** вариант A (HTTP) подходит только для доверенной локальной сети. Пароли и токены идут открытым текстом. В интернет так не выставляйте.
 
 ---
 
-## 0. Подготовка
-
-Замените в примерах:
-
-| Плейсхолдер | Что подставить |
-|---|---|
-| `vault.example.local` | DNS-имя или IP сервера |
-| `/path/to/cert.crt` | путь к вашему сертификату |
-| `/path/to/cert.key` | путь к вашему приватному ключу |
-
-Предполагаемые файлы сертификата:
-
-- `/path/to/cert.crt` (или `.pem`)
-- `/path/to/cert.key`
-
-> **Важно:** клиенты Bitwarden плохо работают с недоверенным self-signed. Добавьте ваш CA/сертификат в доверенные на ПК и телефонах.
-
----
-
-## 1. Установка Docker на РЕД ОС
+## Общее: установка Docker на РЕД ОС
 
 ```bash
 sudo dnf upgrade -y
@@ -45,16 +34,115 @@ docker --version
 docker compose version
 ```
 
-Откройте порт HTTPS в firewall (если включён):
+---
+
+## Вариант A: HTTP, порт 80, без HTTPS
+
+Если **нет** самоподписанного сертификата — используйте этот вариант.
+
+### A1. Firewall
+
+```bash
+sudo firewall-cmd --permanent --add-service=http
+sudo firewall-cmd --reload
+```
+
+### A2. Каталог
+
+```bash
+sudo mkdir -p /opt/vaultwarden/data
+```
+
+Сертификаты и nginx **не нужны**.
+
+### A3. Docker Compose
+
+Создайте файл `/opt/vaultwarden/docker-compose.yml`:
+
+```yaml
+services:
+  vaultwarden:
+    image: vaultwarden/server:latest
+    container_name: vaultwarden
+    restart: unless-stopped
+    environment:
+      # Для доступа по IP укажите http://IP_СЕРВЕРА
+      DOMAIN: "http://vault.example.local"
+      SIGNUPS_ALLOWED: "true"
+      # ADMIN_TOKEN: "сгенерируйте_длинный_токен"
+    volumes:
+      - ./data:/data
+    ports:
+      - "80:80"
+```
+
+Замените `vault.example.local` на DNS-имя или IP сервера, например:
+
+```yaml
+DOMAIN: "http://192.168.1.50"
+```
+
+Админ-токен (опционально):
+
+```bash
+openssl rand -base64 48
+```
+
+### A4. Запуск
+
+```bash
+cd /opt/vaultwarden
+sudo docker compose pull
+sudo docker compose up -d
+sudo docker compose logs -f
+```
+
+Проверка:
+
+```bash
+curl http://vault.example.local
+# или
+curl http://192.168.1.50
+sudo docker compose ps
+```
+
+Откройте в браузере: `http://IP_или_имя`
+
+1. Создайте аккаунт.
+2. Отключите регистрации — в `docker-compose.yml`:
+
+```yaml
+SIGNUPS_ALLOWED: "false"
+```
+
+3. Перезапустите:
+
+```bash
+sudo docker compose up -d
+```
+
+### A5. Клиент Bitwarden
+
+В настройках клиента укажите свой сервер:
+
+```text
+http://IP_или_имя
+```
+
+(без `:80` — порт 80 используется по умолчанию для HTTP.)
+
+---
+
+## Вариант B: HTTPS, порт 443, самоподписанный сертификат
+
+### B1. Firewall
 
 ```bash
 sudo firewall-cmd --permanent --add-service=https
 sudo firewall-cmd --reload
 ```
 
----
-
-## 2. Каталог и сертификаты
+### B2. Каталог и сертификаты
 
 ```bash
 sudo mkdir -p /opt/vaultwarden/{data,ssl,nginx}
@@ -63,11 +151,13 @@ sudo cp /path/to/cert.key /opt/vaultwarden/ssl/privkey.pem
 sudo chmod 600 /opt/vaultwarden/ssl/privkey.pem
 ```
 
----
+> Клиенты Bitwarden плохо работают с недоверенным self-signed. Добавьте CA/сертификат в доверенные на устройствах.
 
-## 3. Конфиг nginx
+### B3. Конфиг nginx
 
-Создайте файл `/opt/vaultwarden/nginx/nginx.conf`:
+Файл `/opt/vaultwarden/nginx/nginx.conf`:
+
+Пути к сертификатам — **внутри контейнера** (`./ssl` → `/etc/nginx/certs`):
 
 ```nginx
 worker_processes auto;
@@ -113,11 +203,14 @@ http {
 }
 ```
 
----
+| На хосте | В nginx (контейнер) |
+|---|---|
+| `/opt/vaultwarden/ssl/fullchain.pem` | `/etc/nginx/certs/fullchain.pem` |
+| `/opt/vaultwarden/ssl/privkey.pem` | `/etc/nginx/certs/privkey.pem` |
 
-## 4. Docker Compose
+### B4. Docker Compose
 
-Создайте файл `/opt/vaultwarden/docker-compose.yml`:
+Файл `/opt/vaultwarden/docker-compose.yml`:
 
 ```yaml
 services:
@@ -153,17 +246,7 @@ networks:
   vwnet:
 ```
 
-Сгенерировать админ-токен (опционально):
-
-```bash
-openssl rand -base64 48
-```
-
-Вставьте значение в `ADMIN_TOKEN` в `docker-compose.yml`.
-
----
-
-## 5. Запуск
+### B5. Запуск
 
 ```bash
 cd /opt/vaultwarden
@@ -179,26 +262,20 @@ curl -k https://vault.example.local
 sudo docker compose ps
 ```
 
-Откройте в браузере: `https://vault.example.local`
-
-1. Создайте аккаунт.
-2. Сразу отключите регистрации — в `docker-compose.yml` поставьте:
-
-```yaml
-SIGNUPS_ALLOWED: "false"
-```
-
-3. Перезапустите:
-
-```bash
-sudo docker compose up -d
-```
+Откройте: `https://vault.example.local` → создайте аккаунт → поставьте `SIGNUPS_ALLOWED: "false"` → `sudo docker compose up -d`.
 
 ---
 
-## Альтернатива: TLS без nginx
+## Вариант C: HTTPS без nginx (ROCKET_TLS)
 
-Проще, но менее предпочтительно по официальным рекомендациям Vaultwarden.
+Проще, но менее предпочтительно.
+
+```bash
+sudo mkdir -p /opt/vaultwarden/{data,ssl}
+sudo cp /path/to/cert.crt /opt/vaultwarden/ssl/fullchain.pem
+sudo cp /path/to/cert.key /opt/vaultwarden/ssl/privkey.pem
+sudo chmod 600 /opt/vaultwarden/ssl/privkey.pem
+```
 
 `/opt/vaultwarden/docker-compose.yml`:
 
@@ -218,8 +295,6 @@ services:
     ports:
       - "443:80"
 ```
-
-Запуск:
 
 ```bash
 cd /opt/vaultwarden
@@ -242,15 +317,16 @@ sudo docker compose up -d
 
 ## Важные замечания
 
-1. В `DOMAIN` обязательно указывайте `https://...` — иначе могут ломаться вложения и ссылки.
-2. Self-signed: в клиентах Bitwarden нужно доверить CA вручную, иначе sync может не работать.
-3. После создания первого пользователя выставьте `SIGNUPS_ALLOWED=false`.
-4. Данные лежат в `/opt/vaultwarden/data` — делайте регулярные бэкапы.
-5. Порт 443 не должен быть занят другим сервисом:
+1. В `DOMAIN` указывайте схему (`http://` или `https://`) так же, как заходите в веб-интерфейс.
+2. После первого пользователя всегда ставьте `SIGNUPS_ALLOWED=false`.
+3. Данные: `/opt/vaultwarden/data` — делайте бэкапы.
+4. Проверка занятых портов:
 
 ```bash
-ss -tlnp | grep :443
+ss -tlnp | grep -E ':80|:443'
 ```
+
+5. HTTP (вариант A) — только в доверенной сети; для продакшена нужен HTTPS.
 
 ---
 

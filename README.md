@@ -4,4 +4,4 @@
 
 ## Документы
 
-- [Установка Vaultwarden на РЕД ОС (Docker + HTTPS)](docs/vaultwarden-redos-docker.md)
+- [Установка Vaultwarden на РЕД ОС (Docker)](docs/vaultwarden-redos-docker.md) — варианты: HTTP :80 без сертификата, HTTPS :443 с self-signed
