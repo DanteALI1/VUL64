@@ -14,9 +14,9 @@ Vaultwarden — неофициальный совместимый с Bitwarden �
 
 | Вариант | Порт | TLS | Когда |
 |---|---|---|---|
-| [A. HTTP](#вариант-a-http-порт-80) | **80** | нет | LAN / тест |
-| [B. HTTPS + nginx](#вариант-b-https-порт-443) | **443** | да | рекомендуется |
-| [Готовый скрипт](#готовый-скрипт-установить-всё-сразу) | 80 или 443 | по флагу | одной командой |
+| [A. HTTP](#вариант-a-http-порт-80) | **80** (вручную) / **8080** (скрипт) | нет | LAN / тест |
+| [B. HTTPS + nginx](#вариант-b-https-порт-443) | **443** (вручную) / **8443** (скрипт) | да | рекомендуется |
+| [Готовый скрипт](#готовый-скрипт-установить-всё-сразу) | **8080 / 8443** | по флагу | одной командой |
 
 > **Важно:** HTTP передаёт пароли открытым текстом. В интернет без HTTPS не выставляйте. Отдельная БД (PostgreSQL/MySQL) не обязательна — SQLite уже внутри образа.
 
@@ -28,22 +28,24 @@ Vaultwarden — неофициальный совместимый с Bitwarden �
 # из корня репозитория на сервере РЕД ОС
 chmod +x scripts/install-vaultwarden-redos.sh scripts/create-vaultwarden-ssl-cert.sh
 
-# HTTPS (рекомендуется): Docker + SSL + nginx :443
+# HTTPS (рекомендуется): Docker + SSL + nginx на портах 8080/8443
 sudo ./scripts/install-vaultwarden-redos.sh \
   --fqdn vault.example.local \
   --ip 192.168.1.50
 
-# HTTP без TLS (только LAN)
+# UI по умолчанию: https://vault.example.local:8443/
+
+# HTTP без TLS (порт 8080)
 sudo ./scripts/install-vaultwarden-redos.sh \
   --fqdn vault.example.local \
   --ip 192.168.1.50 \
   --access http
 
-# Если 80/443 заняты (например HashiCorp Vault) — другие порты:
+# Классические 80/443 (если свободны):
 sudo ./scripts/install-vaultwarden-redos.sh \
   --fqdn vault.example.local \
   --ip 192.168.1.50 \
-  --http-port 8080 --https-port 8443 --force
+  --http-port 80 --https-port 443 --force
 ```
 
 Скрипт:
@@ -366,15 +368,22 @@ failed to bind host port 0.0.0.0:80/tcp: address already in use
 ss -tlnp | grep -E ':80|:443'
 ```
 
-**Вариант 1 — другие порты для Vaultwarden** (Vault на 80/443 оставляете):
+**Вариант 1 — другие порты** (по умолчанию скрипт уже использует **8080/8443**):
+
+```bash
+sudo ./scripts/install-vaultwarden-redos.sh \
+  --fqdn vuln --ip 192.168.1.57 --force
+```
+
+UI: `https://vuln:8443/`
+
+Если и они заняты:
 
 ```bash
 sudo ./scripts/install-vaultwarden-redos.sh \
   --fqdn vuln --ip 192.168.1.57 \
-  --http-port 8080 --https-port 8443 --force
+  --http-port 9080 --https-port 9443 --force
 ```
-
-UI: `https://vuln:8443/`
 
 **Вариант 2 — освободить 80/443** (остановить nginx Vault / старый контейнер):
 
@@ -385,10 +394,12 @@ sudo docker stop vaultwarden-nginx
 sudo ss -tlnp | grep -E ':80|:443'
 ```
 
-Затем снова:
+Затем на классических портах:
 
 ```bash
-cd /opt/vaultwarden && sudo docker compose up -d
+sudo ./scripts/install-vaultwarden-redos.sh \
+  --fqdn vuln --ip 192.168.1.57 \
+  --http-port 80 --https-port 443 --force
 ```
 
 ---
@@ -410,6 +421,7 @@ cd /opt/vaultwarden && sudo docker compose up -d
 
 Нужен HTTPS?
   → sudo ./scripts/install-vaultwarden-redos.sh --fqdn ... --ip ...
+    UI: https://…:8443/  (порты по умолчанию 8080/8443)
 
 Только сертификат?
   → sudo ./scripts/create-vaultwarden-ssl-cert.sh --fqdn ... --ip ...
