@@ -8,9 +8,8 @@
 # Примеры:
 #   sudo ./scripts/install-vaultwarden-redos.sh --fqdn vault.example.local --ip 192.168.1.50
 #   sudo ./scripts/install-vaultwarden-redos.sh --fqdn vault.lan --ip 10.0.0.5 --access http
-#   # если 80/443 заняты (например HashiCorp Vault nginx):
-#   sudo ./scripts/install-vaultwarden-redos.sh --fqdn vault.lan --ip 10.0.0.5 \
-#        --http-port 8080 --https-port 8443 --force
+#   # порты по умолчанию 8080/8443 (чтобы не конфликтовать с Vault на 80/443)
+#   # вернуть классические: --http-port 80 --https-port 443
 
 set -euo pipefail
 
@@ -23,8 +22,8 @@ FORCE=0
 INSTALL_ROOT="/opt/vaultwarden"
 IMAGE="vaultwarden/server:latest"
 SIGNUPS_ALLOWED="true"
-HTTP_PORT=80
-HTTPS_PORT=443
+HTTP_PORT=8080          # не 80 — часто занят nginx HashiCorp Vault
+HTTPS_PORT=8443         # не 443 — то же
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CERT_SCRIPT="${SCRIPT_DIR}/create-vaultwarden-ssl-cert.sh"
 ADMIN_TOKEN=""
@@ -42,10 +41,10 @@ usage() {
   --ip ADDR                   IP сервера (SAN, hosts, удобный URL)
 
 Опции:
-  --access https|http         https = nginx :443 + TLS (по умолчанию)
+  --access https|http         https = nginx + TLS (по умолчанию)
                               http  = только HTTP-порт (LAN)
-  --http-port N               хост-порт HTTP (по умолчанию 80)
-  --https-port N              хост-порт HTTPS (по умолчанию 443)
+  --http-port N               хост-порт HTTP (по умолчанию 8080)
+  --https-port N              хост-порт HTTPS (по умолчанию 8443)
   --cert-mode ca|selfsigned   тип сертификата при https
   --org NAME                  организация в DN сертификата
   --dir PATH                  каталог установки (по умолчанию /opt/vaultwarden)
@@ -54,10 +53,10 @@ usage() {
   --force                     перезаписать compose/nginx и пересоздать cert
   -h, --help
 
-Если порты 80/443 заняты (часто nginx от HashiCorp Vault):
+По умолчанию UI: https://<fqdn>:8443/
+На 80/443 (если свободны):
   sudo ./scripts/install-vaultwarden-redos.sh --fqdn vuln --ip 192.168.1.57 \
-    --http-port 8080 --https-port 8443 --force
-  # UI: https://vuln:8443/
+    --http-port 80 --https-port 443 --force
 EOF
 }
 
@@ -148,10 +147,9 @@ check_ports() {
 Варианты:
   1) Остановить конфликтующий сервис, например:
        systemctl stop nginx
-       # или: docker stop vaultwarden-nginx   # если старый контейнер
-  2) Поставить Vaultwarden на другие порты:
+  2) Выбрать свободные порты:
        sudo $0 --fqdn ${FQDN} ${IP:+--ip $IP} \\
-         --http-port 8080 --https-port 8443 --force
+         --http-port 9080 --https-port 9443 --force
 EOF
     exit 1
   fi
