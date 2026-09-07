@@ -39,8 +39,7 @@ chmod +x scripts/install-vault-redos.sh scripts/create-vault-ssl-cert.sh
 
 sudo ./scripts/install-vault-redos.sh \
   --fqdn vault.example.local \
-  --ip 192.168.1.50 \
-  --init
+  --ip 192.168.1.50
 ```
 
 Что делает [`scripts/install-vault-redos.sh`](../scripts/install-vault-redos.sh):
@@ -50,7 +49,9 @@ sudo ./scripts/install-vault-redos.sh \
 3. Выпускает и ставит SSL (через [`create-vault-ssl-cert.sh`](../scripts/create-vault-ssl-cert.sh))  
 4. Настраивает nginx :443 и firewall  
 5. Запускает Vault  
-6. С `--init` — `vault operator init` + unseal, ключи в `/root/vault-init-KEYS.txt` (chmod 600)
+6. **Сразу** делает `vault operator init` + unseal ×3, сохраняет ключи в `/root/vault-init-KEYS.txt` (chmod 600)
+
+Отключить init: добавьте `--no-init`.
 
 Другие режимы:
 
@@ -59,10 +60,13 @@ sudo ./scripts/install-vault-redos.sh \
 sudo ./scripts/install-vault-redos.sh --fqdn vault.example.local --ip 192.168.1.50 --access http
 
 # Vault сам слушает 443 (без nginx)
-sudo ./scripts/install-vault-redos.sh --fqdn vault.example.local --ip 192.168.1.50 --access direct-https --init
+sudo ./scripts/install-vault-redos.sh --fqdn vault.example.local --ip 192.168.1.50 --access direct-https
 
 # короткий self-signed вместо своей CA
-sudo ./scripts/install-vault-redos.sh --fqdn vault.example.local --ip 192.168.1.50 --cert-mode selfsigned --init
+sudo ./scripts/install-vault-redos.sh --fqdn vault.example.local --ip 192.168.1.50 --cert-mode selfsigned
+
+# только поставить систему, без init
+sudo ./scripts/install-vault-redos.sh --fqdn vault.example.local --ip 192.168.1.50 --no-init
 ```
 
 Справка: `./scripts/install-vault-redos.sh --help`.
@@ -1151,9 +1155,9 @@ curl -skI https://127.0.0.1/ui/ | head
   → Вариант A: nginx :80 → Vault :8200 → http://IP/
 
 Нужен нормальный HTTPS в браузере?
-  → sudo ./scripts/install-vault-redos.sh --fqdn ... --ip ... --init
-    (или вручную: сертификат шаги 1–8 → вариант B)
+  → sudo ./scripts/install-vault-redos.sh --fqdn ... --ip ...
+    (init/unseal сразу; ключи в /root/vault-init-KEYS.txt)
 
 Без nginx, один процесс?
-  → sudo ./scripts/install-vault-redos.sh ... --access direct-https --init
+  → sudo ./scripts/install-vault-redos.sh ... --access direct-https
 ```
