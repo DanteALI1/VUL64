@@ -4,4 +4,4 @@
 
 ## Документы
 
-- [HashiCorp Vault на РЕД ОС: веб-UI (порты 80 / 443)](docs/vault-redos-web.md) — установка, init/unseal, работа с секретами; варианты HTTP :80 и HTTPS :443
+- [HashiCorp Vault на РЕД ОС: веб-UI (порты 80 / 443)](docs/vault-redos-web.md) — установка, init/unseal, работа с секретами; варианты HTTP :80 и HTTPS :443; [создание своего SSL-сертификата](docs/vault-redos-web.md#создание-своего-ssl-сертификата)
