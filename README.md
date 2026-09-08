@@ -4,6 +4,9 @@
 
 ## Документы
 
+### Администрирование РЕД ОС
+- [Команда `super`: переключение на УЗ с sudo только для выбранного пользователя](docs/redos-super-command.md)
+
 ### Ansible (РЕД ОС)
 - [Установка Ansible на РЕД ОС — подробно](docs/ansible-redos.md)
 - Скрипт полной установки и настройки (со всеми подсказками): [`scripts/install-ansible-redos.sh`](scripts/install-ansible-redos.sh)
