@@ -542,4 +542,8 @@ sudo ./scripts/install-vaultwarden-redos.sh \
 
 Бэкап данных?
   → /opt/vaultwarden/data
+
+Удалить всё?
+  → sudo ./scripts/uninstall-vaultwarden-redos.sh --yes
+    (инструкция: docs/vaultwarden-uninstall-redos.md)
 ```
