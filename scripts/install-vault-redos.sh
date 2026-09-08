@@ -62,6 +62,11 @@ usage() {
   sudo ./scripts/install-vault-redos.sh --fqdn vault.company.ru --ip 192.168.1.50 \
     --cert-file /path/server.crt --key-file /path/server.key \
     --chain-file /path/ca-bundle.crt
+
+Только положить готовые cert для Vault:
+  sudo ./scripts/install-vault-existing-ssl-cert.sh \
+    --cert /path/server.crt --key /path/server.key --chain /path/ca-bundle.crt \
+    --force --restart
 EOF
 }
 
@@ -244,17 +249,14 @@ setup_certificates() {
 
   if [[ -n "$CERT_FILE" || -n "$KEY_FILE" ]]; then
     [[ -n "$CERT_FILE" && -n "$KEY_FILE" ]] || die "нужны оба: --cert-file и --key-file"
-    local existing="${SCRIPT_DIR}/install-existing-ssl-cert.sh"
+    local existing="${SCRIPT_DIR}/install-vault-existing-ssl-cert.sh"
     [[ -x "$existing" ]] || die "нет ${existing}"
-    local args=(--target vault --cert "$CERT_FILE" --key "$KEY_FILE")
+    local args=(--cert "$CERT_FILE" --key "$KEY_FILE")
     [[ -n "$CHAIN_FILE" ]] && args+=(--chain "$CHAIN_FILE")
     [[ "$FORCE" -eq 1 ]] && args+=(--force)
+    [[ "$ACCESS" == "direct-https" ]] && args+=(--for-vault-user)
     "$existing" "${args[@]}"
-    if [[ "$ACCESS" == "direct-https" ]] && getent group vault >/dev/null 2>&1; then
-      chown root:vault /etc/ssl/private/vault.key
-      chmod 640 /etc/ssl/private/vault.key
-    fi
-    ok "установлены ваши сертификаты от УЦ"
+    ok "установлены ваши сертификаты от УЦ (HashiCorp Vault)"
     return
   fi
 

@@ -77,20 +77,57 @@ sudo ./scripts/install-vault-redos.sh --fqdn vault.example.local --ip 192.168.1.
 
 ---
 
-## Готовые сертификаты от УЦ
+## Готовые сертификаты от УЦ (HashiCorp Vault)
 
-Если сертификат уже выпущен (корпоративный УЦ / Let's Encrypt):
+Отдельный скрипт только для Vault: [`scripts/install-vault-existing-ssl-cert.sh`](../scripts/install-vault-existing-ssl-cert.sh).
+
+### Какие файлы нужны
+
+| Файл | Что это | Примеры имён |
+|---|---|---|
+| Сертификат сервера | публичная часть | `server.crt`, `domain.crt`, `cert.pem` |
+| Закрытый ключ | секрет | `server.key`, `privkey.pem` |
+| Цепочка CA (часто) | intermediate + root | `ca-bundle.crt`, `chain.pem`, `fullchain.pem` |
+
+> Ключ никому не отправляйте и не коммитьте в git. Имя в `--fqdn` / браузере должно совпадать с CN/SAN сертификата.
+
+### Способ 1. Только установить сертификаты Vault
 
 ```bash
-sudo ./scripts/install-existing-ssl-cert.sh \
-  --target vault \
+chmod +x scripts/install-vault-existing-ssl-cert.sh
+
+sudo ./scripts/install-vault-existing-ssl-cert.sh \
   --cert /path/to/server.crt \
   --key  /path/to/server.key \
   --chain /path/to/ca-bundle.crt \
   --force --restart
 ```
 
-Или установка Vault сразу с вашими файлами:
+Куда кладёт:
+
+- `/etc/ssl/certs/vault.crt`
+- `/etc/ssl/private/vault.key`
+
+Если Vault сам слушает **:443** (вариант C):
+
+```bash
+sudo ./scripts/install-vault-existing-ssl-cert.sh \
+  --cert /path/to/fullchain.pem \
+  --key  /path/to/privkey.pem \
+  --for-vault-user --force --restart
+```
+
+Опции:
+
+| Флаг | Назначение |
+|---|---|
+| `--chain` | дописать CA-bundle к cert |
+| `--trust` | `update-ca-trust` на этой машине |
+| `--restart` | перезапуск `nginx` и `vault` |
+| `--for-vault-user` | права ключа `root:vault 640` |
+| `--force` | перезаписать уже лежащие файлы |
+
+### Способ 2. Установка Vault сразу с вашими cert
 
 ```bash
 sudo ./scripts/install-vault-redos.sh \
@@ -101,7 +138,26 @@ sudo ./scripts/install-vault-redos.sh \
   --chain-file /path/to/ca-bundle.crt
 ```
 
-Подробнее про файлы cert/key/chain — в [инструкции Vaultwarden](vaultwarden-redos-docker.md#готовые-сертификаты-от-уц-выпустили-вам) (тот же скрипт `install-existing-ssl-cert.sh`).
+Если УЦ уже отдал один `fullchain.pem`:
+
+```bash
+sudo ./scripts/install-vault-redos.sh \
+  --fqdn vault.company.ru \
+  --ip 192.168.1.50 \
+  --cert-file /path/to/fullchain.pem \
+  --key-file /path/to/privkey.pem
+```
+
+### Проверка
+
+```bash
+openssl x509 -in /etc/ssl/certs/vault.crt -noout -subject -issuer -dates
+sudo systemctl status nginx vault --no-pager
+export VAULT_ADDR='https://vault.company.ru'
+vault status
+```
+
+После `--restart` Vault часто снова **sealed** — сделайте `vault operator unseal` ×3 (ключи из `/root/vault-init-KEYS.txt`).
 
 ---
 
