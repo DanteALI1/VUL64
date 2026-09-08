@@ -4,6 +4,10 @@
 
 ## Документы
 
+### Ansible (РЕД ОС)
+- [Установка Ansible на РЕД ОС — подробно](docs/ansible-redos.md)
+- Скрипт полной установки и настройки (со всеми подсказками): [`scripts/install-ansible-redos.sh`](scripts/install-ansible-redos.sh)
+
 ### HashiCorp Vault
 - [Vault на РЕД ОС: веб-UI (порты 80 / 443)](docs/vault-redos-web.md)
 - Скрипт «всё сразу»: [`scripts/install-vault-redos.sh`](scripts/install-vault-redos.sh)
