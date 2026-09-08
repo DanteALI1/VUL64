@@ -289,6 +289,9 @@ write_https_stack() {
 worker_processes auto;
 events { worker_connections 1024; }
 http {
+    # Docker embedded DNS — чтобы nginx не держал старый IP vaultwarden
+    resolver 127.0.0.11 valid=10s ipv6=off;
+
     map \$http_upgrade \$connection_upgrade {
         default upgrade;
         ''      close;
@@ -307,6 +310,7 @@ http {
         ssl_protocols       TLSv1.2 TLSv1.3;
         client_max_body_size 128M;
         location / {
+            set \$vw_upstream vaultwarden;
             proxy_http_version 1.1;
             proxy_set_header Host \$host;
             proxy_set_header X-Real-IP \$remote_addr;
@@ -314,7 +318,9 @@ http {
             proxy_set_header X-Forwarded-Proto \$scheme;
             proxy_set_header Upgrade \$http_upgrade;
             proxy_set_header Connection \$connection_upgrade;
-            proxy_pass http://vaultwarden:80;
+            proxy_pass http://\$vw_upstream:80;
+            proxy_connect_timeout 5s;
+            proxy_read_timeout 300s;
         }
     }
 }
@@ -334,6 +340,12 @@ services:
       - ./data:/data
     networks:
       - vwnet
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:80/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   nginx:
     image: nginx:alpine
@@ -399,8 +411,23 @@ start_stack() {
   docker compose down 2>/dev/null || true
   docker compose pull
   docker compose up -d
-  sleep 2
+  sleep 3
   docker compose ps
+
+  # проверка, что vaultwarden реально отвечает внутри сети
+  local i
+  for i in $(seq 1 20); do
+    if docker compose exec -T vaultwarden curl -fsS http://127.0.0.1:80/ >/dev/null 2>&1 \
+       || docker compose exec -T nginx wget -qO- http://vaultwarden:80/ >/dev/null 2>&1; then
+      ok "Vaultwarden отвечает upstream'у"
+      break
+    fi
+    sleep 1
+    if [[ "$i" -eq 20 ]]; then
+      docker compose logs --tail=40 vaultwarden || true
+      die "Vaultwarden не отвечает (502 будет от nginx). Смотрите логи выше."
+    fi
+  done
   ok "стек запущен"
 }
 

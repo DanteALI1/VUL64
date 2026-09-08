@@ -417,12 +417,39 @@ http://192.168.1.50
 
 | Симптом | Что проверить |
 |---|---|
+| 502 Bad Gateway / Host is unreachable | контейнер `vaultwarden` не запущен или nginx держит старый IP — см. ниже |
 | Порт занят (`address already in use`) | На хосте уже слушают 80/443 (часто nginx HashiCorp Vault). См. ниже |
 | `paths must be canonical` | URL с `//ui/` — откройте `https://HOST/` или `https://HOST/ui` **без** двойного слэша |
 | Браузер ругается на cert | self-signed — ожидаемо; импортируйте CA или используйте `--mode ca` |
 | Клиент не логинится | `DOMAIN` = тот же URL, что в клиенте (`http://` vs `https://`) |
 | Порт занят | `ss -tlnp \| grep -E ':80\|:443'` |
 | Нет данных после recreate | том `./data` не удаляйте |
+
+### 502 Bad Gateway / Host is unreachable
+
+В логах nginx часто:
+
+```text
+connect() failed (113: Host is unreachable) while connecting to upstream, upstream: "http://172.x.x.x:80/"
+```
+
+Значит nginx жив, а контейнер **Vaultwarden** недоступен (упал или сменил IP).
+
+```bash
+cd /opt/vaultwarden
+sudo docker compose ps
+sudo docker compose logs --tail=50 vaultwarden
+
+# пересоздать оба контейнера в одной сети
+sudo docker compose down
+sudo docker compose up -d
+sudo docker compose ps
+
+# проверка связи nginx → vaultwarden
+sudo docker exec vaultwarden-nginx wget -qO- http://vaultwarden:80/ | head
+```
+
+Если `vaultwarden` в статусе `Exit`/`Restarting` — смотрите его логи. После починки откройте снова `https://vaultwarden.cloud.novatek.ru:8443/` (без `//`).
 
 ### Порты 80/443 уже заняты
 
