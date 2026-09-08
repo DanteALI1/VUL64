@@ -101,21 +101,48 @@ else
   ok "ключ создан"
 fi
 
-log "4/4 ansible.cfg"
+log "4/4 ansible.cfg + inventory/group_vars"
 if [[ "$PATCH_CFG" -eq 1 && -f "$SYSTEM_CFG" ]]; then
   if grep -q '^[[:space:]]*private_key_file[[:space:]]*=' "$SYSTEM_CFG"; then
     sed -i "s|^[[:space:]]*private_key_file[[:space:]]*=.*|private_key_file = ${KEY_PATH}|" "$SYSTEM_CFG"
   else
-    # вставить в секцию [defaults], если есть
     if grep -q '^\[defaults\]' "$SYSTEM_CFG"; then
       sed -i "/^\[defaults\]/a private_key_file = ${KEY_PATH}" "$SYSTEM_CFG"
     else
       printf '\n[defaults]\nprivate_key_file = %s\n' "$KEY_PATH" >>"$SYSTEM_CFG"
     fi
   fi
-  ok "прописан private_key_file = $KEY_PATH в $SYSTEM_CFG"
+  ok "ansible.cfg: private_key_file = $KEY_PATH"
 else
-  hint "конфиг не меняли (--no-patch-cfg или нет $SYSTEM_CFG)"
+  hint "ansible.cfg не меняли (--no-patch-cfg или нет $SYSTEM_CFG)"
+fi
+
+# Inventory var: ansible_ssh_private_key_file в [servers:vars]
+HOSTS_FILE="/etc/ansible/hosts"
+if [[ "$PATCH_CFG" -eq 1 && -f "$HOSTS_FILE" ]]; then
+  if grep -q '^\[servers:vars\]' "$HOSTS_FILE"; then
+    if grep -q '^[[:space:]]*ansible_ssh_private_key_file[[:space:]]*=' "$HOSTS_FILE"; then
+      sed -i "s|^[[:space:]]*ansible_ssh_private_key_file[[:space:]]*=.*|ansible_ssh_private_key_file=${KEY_PATH}|" "$HOSTS_FILE"
+    else
+      sed -i "/^\[servers:vars\]/a ansible_ssh_private_key_file=${KEY_PATH}" "$HOSTS_FILE"
+    fi
+  else
+    printf '\n[servers:vars]\nansible_ssh_private_key_file=%s\n' "$KEY_PATH" >>"$HOSTS_FILE"
+  fi
+  ok "hosts [servers:vars]: ansible_ssh_private_key_file=${KEY_PATH}"
+fi
+
+# group_vars/all.yml
+if [[ "$PATCH_CFG" -eq 1 ]]; then
+  mkdir -p /etc/ansible/group_vars
+  GV="/etc/ansible/group_vars/all.yml"
+  cat >"$GV" <<EOF
+---
+# Расположение SSH-ключа (group var) — scripts/ansible-keys-secure-setup.sh
+ansible_ssh_private_key_file: ${KEY_PATH}
+EOF
+  chmod 0640 "$GV"
+  ok "group_vars: $GV"
 fi
 
 cat <<EOF
@@ -124,6 +151,11 @@ cat <<EOF
   Каталог:  $KEY_DIR (0700)
   Владелец: $KEY_OWNER — единственный обычный пользователь с доступом к ключам
   Ключ:     $KEY_PATH
+
+Путь к ключу прописан в:
+  • ansible.cfg          → private_key_file
+  • /etc/ansible/hosts   → [servers:vars] ansible_ssh_private_key_file
+  • group_vars/all.yml   → ansible_ssh_private_key_file
 
 Переместить ключ в архив:
   sudo -u $KEY_OWNER ./scripts/ansible-keys-ctl.sh move-archive

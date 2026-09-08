@@ -289,6 +289,8 @@ fi
 
 # --------------------------- защищённый каталог (до ansible.cfg) ------------
 PRIVATE_KEY_CFG_LINE=""
+INVENTORY_KEY_VAR=""
+GROUP_VARS_KEY_LINE=""
 if [[ "$SECURE_KEYS" -eq 1 ]]; then
   log "3/8 Защищённый каталог ключей"
   ensure_key_owner "$KEY_OWNER" "$KEY_DIR"
@@ -296,7 +298,11 @@ if [[ "$SECURE_KEYS" -eq 1 ]]; then
   write_key_dir_readme "$KEY_DIR" "$KEY_OWNER"
   KEY_PATH="${KEY_DIR}/id_ed25519"
   KEY_PUB="${KEY_PATH}.pub"
+  # 1) ansible.cfg → private_key_file
+  # 2) inventory vars → ansible_ssh_private_key_file (приоритетнее для хостов)
   PRIVATE_KEY_CFG_LINE="private_key_file = ${KEY_PATH}"
+  INVENTORY_KEY_VAR="ansible_ssh_private_key_file=${KEY_PATH}"
+  GROUP_VARS_KEY_LINE="ansible_ssh_private_key_file: ${KEY_PATH}"
 else
   log "3/8 Защищённый каталог ключей — пропуск (нет --secure-keys)"
   hint "для жёсткой изоляции ключей перезапустите с --secure-keys"
@@ -348,18 +354,31 @@ if [[ -n "$HOSTS" ]]; then
   for h in "${HOST_ARR[@]}"; do
     h="$(echo "$h" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     [[ -z "$h" ]] && continue
-    if [[ -n "$REMOTE_USER" ]]; then
-      HOST_BLOCK+="${h} ansible_user=${REMOTE_USER}"$'\n'
-    else
-      HOST_BLOCK+="${h}"$'\n'
-    fi
+    # ansible_user и путь к ключу задаём в [servers:vars] / group_vars — не дублируем в каждой строке
+    HOST_BLOCK+="${h}"$'\n'
   done
 fi
 
 if [[ -z "$HOST_BLOCK" ]]; then
   HOST_BLOCK="# добавьте сюда IP/DNS управляемых узлов, по одному в строке
 # 192.168.0.100
-# 192.168.0.101 ansible_user=admin
+# 192.168.0.101
+"
+fi
+
+# Блок [servers:vars] — расположение ключа и пользователь SSH (inventory vars)
+SERVERS_VARS_BLOCK="# переменные группы servers
+# ansible_ssh_private_key_file перекрывает private_key_file из ansible.cfg
+"
+if [[ -n "$REMOTE_USER" ]]; then
+  SERVERS_VARS_BLOCK+="ansible_user=${REMOTE_USER}"$'\n'
+fi
+if [[ -n "$INVENTORY_KEY_VAR" ]]; then
+  SERVERS_VARS_BLOCK+="${INVENTORY_KEY_VAR}"$'\n'
+fi
+if [[ -z "$REMOTE_USER" && -z "$INVENTORY_KEY_VAR" ]]; then
+  SERVERS_VARS_BLOCK+="# ansible_user=admin
+# ansible_ssh_private_key_file=/var/lib/ansible-keys/id_ed25519
 "
 fi
 
@@ -376,12 +395,41 @@ localhost ansible_connection=local
 
 [servers]
 ${HOST_BLOCK}
+
+[servers:vars]
+${SERVERS_VARS_BLOCK}
 EOF
 ok "записан $SYSTEM_HOSTS"
+if [[ -n "$INVENTORY_KEY_VAR" ]]; then
+  hint "в [servers:vars] задано: $INVENTORY_KEY_VAR"
+fi
+if [[ -n "$HOSTS" ]]; then
+  hint "хосты из --hosts добавлены в группу [servers]"
+else
+  hint "хосты не переданы — допишите их вручную в $SYSTEM_HOSTS"
+fi
+
+# group_vars/all.yml — тот же путь к ключу в YAML (удобно для плейбуков)
+if [[ -n "$GROUP_VARS_KEY_LINE" ]]; then
+  mkdir -p /etc/ansible/group_vars
+  GROUP_VARS_FILE="/etc/ansible/group_vars/all.yml"
+  backup_if_exists "$GROUP_VARS_FILE"
+  cat >"$GROUP_VARS_FILE" <<EOF
+---
+# Сгенерировано scripts/install-ansible-redos.sh
+# Расположение SSH-ключа (group var)
+${GROUP_VARS_KEY_LINE}
+EOF
+  if [[ -n "$REMOTE_USER" ]]; then
+    printf 'ansible_user: %s\n' "$REMOTE_USER" >>"$GROUP_VARS_FILE"
+  fi
+  chmod 0640 "$GROUP_VARS_FILE"
+  ok "записан $GROUP_VARS_FILE ($GROUP_VARS_KEY_LINE)"
+fi
 
 if [[ -n "$PROJECT_DIR" ]]; then
   log "6b/8 Проектный каталог: $PROJECT_DIR"
-  mkdir -p "$PROJECT_DIR/inventory" "$PROJECT_DIR/playbooks"
+  mkdir -p "$PROJECT_DIR/inventory" "$PROJECT_DIR/playbooks" "$PROJECT_DIR/group_vars"
   backup_if_exists "$PROJECT_DIR/ansible.cfg"
   backup_if_exists "$PROJECT_DIR/inventory/hosts"
 
@@ -401,6 +449,13 @@ become_method = sudo
 EOF
 
   cp -a "$SYSTEM_HOSTS" "$PROJECT_DIR/inventory/hosts"
+  if [[ -n "$GROUP_VARS_KEY_LINE" ]]; then
+    cat >"$PROJECT_DIR/group_vars/all.yml" <<EOF
+---
+${GROUP_VARS_KEY_LINE}
+EOF
+    [[ -n "$REMOTE_USER" ]] && printf 'ansible_user: %s\n' "$REMOTE_USER" >>"$PROJECT_DIR/group_vars/all.yml"
+  fi
 
   cat >"$PROJECT_DIR/playbooks/ping.yml" <<'EOF'
 ---
@@ -428,7 +483,7 @@ EOF
         state: present
 EOF
 
-  ok "проект: $PROJECT_DIR"
+  ok "проект: $PROJECT_DIR (включая group_vars при --secure-keys)"
 fi
 
 # --------------------------- SSH-ключ --------------------------------------
@@ -528,6 +583,11 @@ if [[ "$SECURE_KEYS" -eq 1 ]]; then
   Приватный: $KEY_PATH
   Публичный: $KEY_PUB
   Архив:     $KEY_DIR/archive/
+
+  Путь к ключу в конфигурации Ansible:
+    ansible.cfg              → private_key_file = $KEY_PATH
+    /etc/ansible/hosts       → [servers:vars] ansible_ssh_private_key_file=$KEY_PATH
+    group_vars/all.yml       → ansible_ssh_private_key_file: $KEY_PATH
 
   Запуск Ansible:
     sudo -u $KEY_OWNER -H ansible all -m ping

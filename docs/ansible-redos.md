@@ -214,7 +214,9 @@ ssh user@192.168.0.100 'hostname && python3 --version'
 | Приватный ключ | `/var/lib/ansible-keys/id_ed25519` (`chmod 600`) |
 | Публичный ключ | `/var/lib/ansible-keys/id_ed25519.pub` |
 | Архив старых ключей | `/var/lib/ansible-keys/archive/` |
-| В `ansible.cfg` | `private_key_file = /var/lib/ansible-keys/id_ed25519` |
+| `ansible.cfg` | `private_key_file = /var/lib/ansible-keys/id_ed25519` |
+| Inventory vars | `[servers:vars]` → `ansible_ssh_private_key_file=...` |
+| Group vars | `/etc/ansible/group_vars/all.yml` → `ansible_ssh_private_key_file: ...` |
 
 Другие **обычные** пользователи системы в каталог не зайдут и ключи не скопируют/не переместят.  
 **Ограничение Linux:** пользователь `root` по-прежнему может читать любые файлы. Полная защита от root — только HSM / шифрование с секретом вне этой машины.
