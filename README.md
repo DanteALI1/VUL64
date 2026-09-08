@@ -7,6 +7,8 @@
 ### Ansible (РЕД ОС)
 - [Установка Ansible на РЕД ОС — подробно](docs/ansible-redos.md)
 - Скрипт полной установки и настройки (со всеми подсказками): [`scripts/install-ansible-redos.sh`](scripts/install-ansible-redos.sh)
+- Защищённый каталог ключей (один владелец): флаг `--secure-keys` или [`scripts/ansible-keys-secure-setup.sh`](scripts/ansible-keys-secure-setup.sh)
+- Управление ключами: [`scripts/ansible-keys-ctl.sh`](scripts/ansible-keys-ctl.sh) (`list` / `move-archive` / `show-pub`)
 
 ### HashiCorp Vault
 - [Vault на РЕД ОС: веб-UI (порты 80 / 443)](docs/vault-redos-web.md)
