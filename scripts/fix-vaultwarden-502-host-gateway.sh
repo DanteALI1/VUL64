@@ -47,8 +47,25 @@ done
 [[ "${EUID}" -eq 0 ]] || die "запустите через sudo"
 [[ -d "$INSTALL_ROOT" ]] || die "нет ${INSTALL_ROOT}"
 [[ -f "${INSTALL_ROOT}/docker-compose.yml" ]] || die "нет docker-compose.yml"
+# совместимость со старыми именами файлов
+if [[ ! -f "${INSTALL_ROOT}/ssl/fullchain.pem" ]]; then
+  for cand in vaultwarden.crt fullchain.crt cert.pem; do
+    if [[ -f "${INSTALL_ROOT}/ssl/${cand}" ]]; then
+      ln -sfn "$cand" "${INSTALL_ROOT}/ssl/fullchain.pem"
+      break
+    fi
+  done
+fi
+if [[ ! -f "${INSTALL_ROOT}/ssl/privkey.pem" ]]; then
+  for cand in vaultwarden.key privkey.key key.pem; do
+    if [[ -f "${INSTALL_ROOT}/ssl/${cand}" ]]; then
+      ln -sfn "$cand" "${INSTALL_ROOT}/ssl/privkey.pem"
+      break
+    fi
+  done
+fi
 [[ -f "${INSTALL_ROOT}/ssl/fullchain.pem" && -f "${INSTALL_ROOT}/ssl/privkey.pem" ]] \
-  || die "нет SSL в ${INSTALL_ROOT}/ssl/"
+  || die "нет SSL в ${INSTALL_ROOT}/ssl/ (нужны fullchain.pem + privkey.pem)"
 
 DOMAIN="$(grep -E '^\s*DOMAIN:' "${INSTALL_ROOT}/docker-compose.yml" | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)"
 ADMIN_TOKEN="$(grep -E '^\s*ADMIN_TOKEN:' "${INSTALL_ROOT}/docker-compose.yml" | head -1 | sed -E 's/.*"([^"]+)".*/\1/' || true)"
