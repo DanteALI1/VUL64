@@ -323,6 +323,10 @@ http {
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection $connection_upgrade;
+            # Docker DNS (избегает 502 Host is unreachable со старым IP)
+            # resolver 127.0.0.11 valid=10s ipv6=off;
+            # set $vw_upstream vaultwarden;
+            # proxy_pass http://$vw_upstream:80;
             proxy_pass http://vaultwarden:80;
         }
     }
@@ -417,12 +421,52 @@ http://192.168.1.50
 
 | Симптом | Что проверить |
 |---|---|
+| 502 Bad Gateway / Host is unreachable | контейнер `vaultwarden` не запущен или nginx держит старый IP — см. ниже |
 | Порт занят (`address already in use`) | На хосте уже слушают 80/443 (часто nginx HashiCorp Vault). См. ниже |
 | `paths must be canonical` | URL с `//ui/` — откройте `https://HOST/` или `https://HOST/ui` **без** двойного слэша |
 | Браузер ругается на cert | self-signed — ожидаемо; импортируйте CA или используйте `--mode ca` |
 | Клиент не логинится | `DOMAIN` = тот же URL, что в клиенте (`http://` vs `https://`) |
 | Порт занят | `ss -tlnp \| grep -E ':80\|:443'` |
 | Нет данных после recreate | том `./data` не удаляйте |
+
+### 502 Bad Gateway / Host is unreachable
+
+В логах nginx часто:
+
+```text
+connect() failed (113: Host is unreachable) while connecting to upstream, upstream: "http://172.x.x.x:80/"
+```
+
+Значит nginx жив, а контейнер **Vaultwarden** недоступен (упал, сменил IP, или **firewalld режет Docker-сеть** на РЕД ОС).
+
+```bash
+cd /opt/vaultwarden
+sudo docker compose ps
+sudo docker compose logs --tail=50 vaultwarden
+
+# 1) починить firewalld для Docker bridge (частая причина на РЕД ОС)
+sudo firewall-cmd --permanent --zone=public --add-masquerade
+sudo firewall-cmd --permanent --zone=trusted --add-interface=docker0
+sudo firewall-cmd --permanent --zone=trusted --add-source=172.16.0.0/12
+sudo firewall-cmd --reload
+sudo systemctl restart docker
+
+# 2) поднять стек заново
+cd /opt/vaultwarden
+sudo docker compose up -d
+sudo docker compose ps
+
+# 3) проверка связи nginx → vaultwarden
+sudo docker exec vaultwarden-nginx wget -qO- http://vaultwarden:80/ | head
+
+# сети контейнеров должны совпадать
+sudo docker inspect vaultwarden --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{$v.IPAddress}}{{"\n"}}{{end}}'
+sudo docker inspect vaultwarden-nginx --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{$v.IPAddress}}{{"\n"}}{{end}}'
+```
+
+Если `wget` из nginx всё ещё `Host is unreachable` — пришлите вывод двух `docker inspect` выше.
+
+Если `vaultwarden` в статусе `Exit`/`Restarting` — смотрите его логи. После починки откройте снова `https://vaultwarden.cloud.novatek.ru:8443/` (без `//`).
 
 ### Порты 80/443 уже заняты
 
