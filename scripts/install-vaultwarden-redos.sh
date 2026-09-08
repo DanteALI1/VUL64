@@ -340,12 +340,6 @@ services:
       - ./data:/data
     networks:
       - vwnet
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://127.0.0.1:80/"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
 
   nginx:
     image: nginx:alpine

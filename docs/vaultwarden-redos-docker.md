@@ -323,6 +323,10 @@ http {
             proxy_set_header X-Forwarded-Proto $scheme;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection $connection_upgrade;
+            # Docker DNS (избегает 502 Host is unreachable со старым IP)
+            # resolver 127.0.0.11 valid=10s ipv6=off;
+            # set $vw_upstream vaultwarden;
+            # proxy_pass http://$vw_upstream:80;
             proxy_pass http://vaultwarden:80;
         }
     }
