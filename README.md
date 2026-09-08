@@ -6,6 +6,7 @@
 
 ### Администрирование РЕД ОС
 - [Команда `super`: переключение на УЗ с sudo только для выбранного пользователя](docs/redos-super-command.md)
+- [SSH: смена порта (22→2242), SELinux, firewalld, доступ только с IP](docs/redos-ssh-port-selinux.md)
 
 ### Ansible (РЕД ОС)
 - [Установка Ansible на РЕД ОС — подробно](docs/ansible-redos.md)
