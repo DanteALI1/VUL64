@@ -1,0 +1,24 @@
+# /etc/sudoers.d/svcsec — вариант A: жёсткий allowlist
+# Документация: docs/ansible-svcsec-svcsecadmin.md
+#
+# svcsec НЕ получает интерактивный root (su / bash / sh).
+# Разрешены только перечисленные команды — расширяйте Cmnd_Alias под плейбуки.
+#
+# Установка:
+#   install -m 440 this-file /etc/sudoers.d/svcsec
+#   visudo -cf /etc/sudoers.d/svcsec
+
+Defaults:svcsec !requiretty
+Defaults:svcsec secure_path="/usr/sbin:/usr/bin:/sbin:/bin"
+
+Cmnd_Alias SVCSEC_PKGS = /usr/bin/dnf, /usr/bin/yum, /usr/bin/rpm
+Cmnd_Alias SVCSEC_SVC  = /usr/bin/systemctl, /usr/sbin/service
+Cmnd_Alias SVCSEC_NET  = /usr/bin/firewall-cmd, /usr/sbin/iptables, /usr/sbin/ip6tables
+Cmnd_Alias SVCSEC_FS   = /usr/bin/install, /usr/bin/mkdir, /usr/bin/cp, /usr/bin/mv, /usr/bin/rm, /usr/bin/chmod, /usr/bin/chown, /usr/bin/tee, /usr/bin/ln, /usr/bin/touch, /usr/bin/cat
+Cmnd_Alias SVCSEC_EDIT = /usr/bin/sed, /usr/bin/grep, /usr/sbin/visudo
+Cmnd_Alias SVCSEC_OK   = SVCSEC_PKGS, SVCSEC_SVC, SVCSEC_NET, SVCSEC_FS, SVCSEC_EDIT
+
+Cmnd_Alias SVCSEC_DENY = /bin/su, /usr/bin/su, /bin/bash, /bin/sh, /usr/bin/bash, /usr/bin/sh, /bin/zsh, /usr/bin/zsh
+
+svcsec ALL=(root) NOPASSWD: SVCSEC_OK
+svcsec ALL=(root) !SVCSEC_DENY
