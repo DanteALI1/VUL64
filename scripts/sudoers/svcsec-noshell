@@ -1,0 +1,21 @@
+# /etc/sudoers.d/svcsec — вариант B: NOPASSWD ALL, без shell/su
+# Документация: docs/ansible-svcsec-svcsecadmin.md
+#
+# Практичный режим для Ansible become: почти любые команды через sudo,
+# но без интерактивного root (sudo su / sudo bash / sudo -i через shell).
+#
+# Установка:
+#   install -m 440 this-file /etc/sudoers.d/svcsec
+#   visudo -cf /etc/sudoers.d/svcsec
+
+Defaults:svcsec !requiretty
+
+Cmnd_Alias SVCSEC_SHELLS = \
+  /bin/su, /usr/bin/su, \
+  /bin/bash, /usr/bin/bash, \
+  /bin/sh, /usr/bin/sh, \
+  /bin/zsh, /usr/bin/zsh, \
+  /bin/dash, /usr/bin/dash, \
+  /usr/bin/sudoedit
+
+svcsec ALL=(root) NOPASSWD: ALL, !SVCSEC_SHELLS

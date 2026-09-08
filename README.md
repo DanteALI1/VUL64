@@ -13,6 +13,9 @@
 - Скрипт полной установки и настройки (со всеми подсказками): [`scripts/install-ansible-redos.sh`](scripts/install-ansible-redos.sh)
 - Защищённый каталог ключей (один владелец): флаг `--secure-keys` или [`scripts/ansible-keys-secure-setup.sh`](scripts/ansible-keys-secure-setup.sh)
 - Управление ключами: [`scripts/ansible-keys-ctl.sh`](scripts/ansible-keys-ctl.sh) (`list` / `move-archive` / `show-pub`)
+- **Отдельно:** [svcsec / svcsecadmin — sudo без `sudo su`, роли на узлах](docs/ansible-svcsec-svcsecadmin.md)
+  - шаблоны sudoers: [`scripts/sudoers/`](scripts/sudoers/)
+  - подготовка узла: [`scripts/deploy-svcsec-node.sh`](scripts/deploy-svcsec-node.sh)
 
 ### HashiCorp Vault
 - [Vault на РЕД ОС: веб-UI (порты 80 / 443)](docs/vault-redos-web.md)
