@@ -27,6 +27,9 @@ KEY_THRESHOLD=3
 INIT_FILE="/root/vault-init-KEYS.txt"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CERT_SCRIPT="${SCRIPT_DIR}/create-vault-ssl-cert.sh"
+CERT_FILE=""
+KEY_FILE=""
+CHAIN_FILE=""
 
 usage() {
   cat <<'EOF'
@@ -44,22 +47,21 @@ usage() {
                               https         = nginx :443 + TLS (по умолчанию, вариант B)
                               http          = nginx :80 без TLS (вариант A, только LAN)
                               direct-https  = Vault сам на :443 (вариант C)
-  --cert-mode ca|selfsigned   тип сертификата при https/direct-https (по умолчанию ca)
+  --cert-mode ca|selfsigned   самоподписанный cert (если нет своих файлов)
+  --cert-file PATH            готовый сертификат/fullchain от УЦ
+  --key-file PATH             готовый ключ от УЦ
+  --chain-file PATH           CA-bundle (если cert без цепочки)
   --org NAME                  организация в DN сертификата
   --init                      init + unseal сразу (по умолчанию ВКЛЮЧЕНО)
   --no-init                   не делать vault operator init / unseal
   --init-file PATH            куда писать unseal/root (по умолчанию /root/vault-init-KEYS.txt)
-  --force                     перезаписать конфиги и пересоздать сертификаты
+  --force                     перезаписать конфиги и сертификаты
   -h, --help                  справка
 
-Что делает скрипт:
-  1) ставит vault, openssl, nginx (и firewalld при необходимости)
-  2) создаёт пользователя/каталоги, vault.hcl, systemd unit
-  3) для HTTPS — создаёт и ставит SSL (через create-vault-ssl-cert.sh)
-  4) настраивает nginx и firewall
-  5) запускает службы
-  6) инициализирует Vault, делает unseal ×3, сохраняет ключи (chmod 600)
-     (отключить: --no-init)
+Свои сертификаты от УЦ:
+  sudo ./scripts/install-vault-redos.sh --fqdn vault.company.ru --ip 192.168.1.50 \
+    --cert-file /path/server.crt --key-file /path/server.key \
+    --chain-file /path/ca-bundle.crt
 EOF
 }
 
@@ -74,6 +76,9 @@ while [[ $# -gt 0 ]]; do
     --ip) IP="${2:-}"; shift 2 ;;
     --access) ACCESS="${2:-}"; shift 2 ;;
     --cert-mode) CERT_MODE="${2:-}"; shift 2 ;;
+    --cert-file) CERT_FILE="${2:-}"; shift 2 ;;
+    --key-file) KEY_FILE="${2:-}"; shift 2 ;;
+    --chain-file) CHAIN_FILE="${2:-}"; shift 2 ;;
     --org) ORG="${2:-}"; shift 2 ;;
     --init) DO_INIT=1; shift ;;
     --no-init) DO_INIT=0; shift ;;
@@ -236,6 +241,23 @@ setup_certificates() {
     return
   fi
   log "5/8 SSL-сертификаты"
+
+  if [[ -n "$CERT_FILE" || -n "$KEY_FILE" ]]; then
+    [[ -n "$CERT_FILE" && -n "$KEY_FILE" ]] || die "нужны оба: --cert-file и --key-file"
+    local existing="${SCRIPT_DIR}/install-existing-ssl-cert.sh"
+    [[ -x "$existing" ]] || die "нет ${existing}"
+    local args=(--target vault --cert "$CERT_FILE" --key "$KEY_FILE")
+    [[ -n "$CHAIN_FILE" ]] && args+=(--chain "$CHAIN_FILE")
+    [[ "$FORCE" -eq 1 ]] && args+=(--force)
+    "$existing" "${args[@]}"
+    if [[ "$ACCESS" == "direct-https" ]] && getent group vault >/dev/null 2>&1; then
+      chown root:vault /etc/ssl/private/vault.key
+      chmod 640 /etc/ssl/private/vault.key
+    fi
+    ok "установлены ваши сертификаты от УЦ"
+    return
+  fi
+
   [[ -x "$CERT_SCRIPT" ]] || die "не найден ${CERT_SCRIPT}"
 
   local args=(--fqdn "$FQDN" --mode "$CERT_MODE" --org "$ORG")

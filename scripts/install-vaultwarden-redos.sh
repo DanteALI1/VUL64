@@ -28,6 +28,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CERT_SCRIPT="${SCRIPT_DIR}/create-vaultwarden-ssl-cert.sh"
 ADMIN_TOKEN=""
 ADMIN_TOKEN_FILE=""
+CERT_FILE=""            # готовый сертификат / fullchain от УЦ
+KEY_FILE=""             # готовый ключ от УЦ
+CHAIN_FILE=""           # опциональная цепочка CA
 
 usage() {
   cat <<'EOF'
@@ -45,18 +48,27 @@ usage() {
                               http  = только HTTP-порт (LAN)
   --http-port N               хост-порт HTTP (по умолчанию 8080)
   --https-port N              хост-порт HTTPS (по умолчанию 8443)
-  --cert-mode ca|selfsigned   тип сертификата при https
-  --org NAME                  организация в DN сертификата
+  --cert-mode ca|selfsigned   самоподписанный cert (если нет своих файлов)
+  --cert-file PATH            готовый сертификат/fullchain от УЦ
+  --key-file PATH             готовый ключ от УЦ
+  --chain-file PATH           CA-bundle (если cert без цепочки)
+  --org NAME                  организация в DN самоподписанного cert
   --dir PATH                  каталог установки (по умолчанию /opt/vaultwarden)
   --image IMAGE               образ (по умолчанию vaultwarden/server:latest)
   --admin-token TOKEN         задать ADMIN_TOKEN явно
-  --force                     перезаписать compose/nginx и пересоздать cert
+  --force                     перезаписать compose/nginx и SSL
   -h, --help
 
 По умолчанию UI: https://<fqdn>:8443/
-На 80/443 (если свободны):
-  sudo ./scripts/install-vaultwarden-redos.sh --fqdn vuln --ip 192.168.1.57 \
-    --http-port 80 --https-port 443 --force
+
+Свои сертификаты от УЦ:
+  sudo ./scripts/install-vaultwarden-redos.sh --fqdn vault.company.ru --ip 192.168.1.57 \
+    --cert-file /path/server.crt --key-file /path/server.key \
+    --chain-file /path/ca-bundle.crt --force
+
+Только положить готовые cert в /opt/vaultwarden/ssl:
+  sudo ./scripts/install-existing-ssl-cert.sh --target vaultwarden \
+    --cert /path/server.crt --key /path/server.key --chain /path/ca-bundle.crt --restart
 EOF
 }
 
@@ -72,6 +84,9 @@ while [[ $# -gt 0 ]]; do
     --http-port) HTTP_PORT="${2:-}"; shift 2 ;;
     --https-port) HTTPS_PORT="${2:-}"; shift 2 ;;
     --cert-mode) CERT_MODE="${2:-}"; shift 2 ;;
+    --cert-file) CERT_FILE="${2:-}"; shift 2 ;;
+    --key-file) KEY_FILE="${2:-}"; shift 2 ;;
+    --chain-file) CHAIN_FILE="${2:-}"; shift 2 ;;
     --org) ORG="${2:-}"; shift 2 ;;
     --dir) INSTALL_ROOT="${2:-}"; shift 2 ;;
     --image) IMAGE="${2:-}"; shift 2 ;;
@@ -216,9 +231,23 @@ setup_certs() {
     return
   fi
   log "4/7 SSL-сертификаты"
+
+  # Готовые сертификаты от УЦ
+  if [[ -n "$CERT_FILE" || -n "$KEY_FILE" ]]; then
+    [[ -n "$CERT_FILE" && -n "$KEY_FILE" ]] || die "нужны оба: --cert-file и --key-file"
+    local existing="${SCRIPT_DIR}/install-existing-ssl-cert.sh"
+    [[ -x "$existing" ]] || die "нет ${existing}"
+    local args=(--target vaultwarden --cert "$CERT_FILE" --key "$KEY_FILE" --vw-dir "${INSTALL_ROOT}/ssl")
+    [[ -n "$CHAIN_FILE" ]] && args+=(--chain "$CHAIN_FILE")
+    [[ "$FORCE" -eq 1 ]] && args+=(--force)
+    "$existing" "${args[@]}"
+    ok "установлены ваши сертификаты от УЦ"
+    return
+  fi
+
   [[ -x "$CERT_SCRIPT" ]] || die "нет ${CERT_SCRIPT}"
   if [[ -f "${INSTALL_ROOT}/ssl/fullchain.pem" && -f "${INSTALL_ROOT}/ssl/privkey.pem" && "$FORCE" -ne 1 ]]; then
-    ok "сертификаты уже есть (перевыпуск: --force)"
+    ok "сертификаты уже есть (перевыпуск: --force или --cert-file/--key-file)"
     return
   fi
   local args=(--fqdn "$FQDN" --mode "$CERT_MODE" --org "$ORG" --install-dir "${INSTALL_ROOT}/ssl")

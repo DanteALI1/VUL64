@@ -77,6 +77,34 @@ sudo ./scripts/install-vault-redos.sh --fqdn vault.example.local --ip 192.168.1.
 
 ---
 
+## Готовые сертификаты от УЦ
+
+Если сертификат уже выпущен (корпоративный УЦ / Let's Encrypt):
+
+```bash
+sudo ./scripts/install-existing-ssl-cert.sh \
+  --target vault \
+  --cert /path/to/server.crt \
+  --key  /path/to/server.key \
+  --chain /path/to/ca-bundle.crt \
+  --force --restart
+```
+
+Или установка Vault сразу с вашими файлами:
+
+```bash
+sudo ./scripts/install-vault-redos.sh \
+  --fqdn vault.company.ru \
+  --ip 192.168.1.50 \
+  --cert-file /path/to/server.crt \
+  --key-file /path/to/server.key \
+  --chain-file /path/to/ca-bundle.crt
+```
+
+Подробнее про файлы cert/key/chain — в [инструкции Vaultwarden](vaultwarden-redos-docker.md#готовые-сертификаты-от-уц-выпустили-вам) (тот же скрипт `install-existing-ssl-cert.sh`).
+
+---
+
 ## Рекомендации по безопасности (из БЗ РЕД ОС)
 
 При настройке Vault:
