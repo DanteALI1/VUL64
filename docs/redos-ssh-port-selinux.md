@@ -338,6 +338,15 @@ EOF
 
 Формат `user@host` ограничивает и пользователя, и источник.
 
+Для схемы «по SSH только `svcsec`, дальше `super` → `svcsecadmin`» используйте:
+
+```text
+AllowUsers svcsec
+# или с IP: AllowUsers svcsec@203.0.113.50
+```
+
+Подробности цепочки доступа: [`redos-super-command.md`](redos-super-command.md).
+
 ### Способ 2: блок `Match Address` (гибче)
 
 ```bash

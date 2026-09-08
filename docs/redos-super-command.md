@@ -1,404 +1,525 @@
-# РЕД ОС: команда `super` — переключение на привилегированную УЗ
+# РЕД ОС: команда `super` (svcsec → svcsecadmin → root)
 
-Подробная инструкция: как в **РЕД ОС** сделать так, чтобы при вводе `super` пользователь переключался на другую учётную запись с правами `sudo`, а доступ к этой команде был только у выбранного пользователя.
+Полная инструкция под вашу схему доступа на **РЕД ОС**:
 
-Схема подходит для РЕД ОС 7.3 / 8 (как у семейства RHEL: `sudo`, `visudo`, группа `wheel`, `/usr/local/bin`).
+1. По **SSH** на сервер заходит **только** УЗ `svcsec`
+2. У `svcsec` есть команда **`super`**
+3. После `super` запрашивается **пароль УЗ `svcsecadmin`**
+4. Открывается сессия `svcsecadmin` (есть права `sudo`)
+5. Уже из `svcsecadmin` можно перейти в `root` через `sudo`
 
-| Параметр | Значение по умолчанию в примерах |
+Схема для РЕД ОС 7.3 / 8 (RHEL-подобная: `sshd`, `sudo`, `wheel`, SELinux).
+
+| Роль | УЗ | Назначение |
+|---|---|---|
+| Вход по SSH | `svcsec` | единственный пользователь для удалённого входа |
+| Команда `super` | запускает `svcsec` | переключение на `svcsecadmin` с запросом пароля |
+| Админ с sudo | `svcsecadmin` | локальная привилегированная УЗ, вход по SSH запрещён |
+| Root | `root` | только через `sudo` от `svcsecadmin` |
+
+| Параметр | Значение |
 |---|---|
-| Команда | `super` |
-| Кому разрешено | `ivan` |
-| Куда переключаемся | `admin` (в группе `wheel`, есть `sudo`) |
-| Путь скрипта | `/usr/local/bin/super` |
-| Правило sudoers | `/etc/sudoers.d/super-command` |
-
-Замените `ivan` и `admin` на свои имена пользователей.
+| Команда | `/usr/local/bin/super` |
+| SSH-ограничение | `AllowUsers svcsec` |
+| Группа для файла `super` | `superusers` (только `svcsec`) |
 
 ---
 
 ## Содержание
 
-1. [Цель](#цель)
-2. [Подготовка пользователей](#подготовка-пользователей)
-3. [Создание команды super](#создание-команды-super)
-4. [Разрешить super только одному пользователю](#разрешить-super-только-одному-пользователю)
-5. [Рекомендуемый вариант (просто super)](#рекомендуемый-вариант-просто-super)
-6. [Ужесточение прав на файл](#ужесточение-прав-на-файл)
-7. [Примеры использования](#примеры-использования)
-8. [Логирование](#логирование)
-9. [Типичные ошибки](#типичные-ошибки)
-10. [Минимальный рабочий набор](#минимальный-рабочий-набор)
-11. [Варианты: с паролем и сразу в root](#варианты-с-паролем-и-сразу-в-root)
+1. [Целевая схема](#целевая-схема)
+2. [Порядок настройки](#порядок-настройки)
+3. [Создание пользователей](#создание-пользователей)
+4. [Права sudo у svcsecadmin](#права-sudo-у-svcsecadmin)
+5. [Команда super](#команда-super)
+6. [SSH: вход только для svcsec](#ssh-вход-только-для-svcsec)
+7. [Проверка от начала до конца](#проверка-от-начала-до-конца)
+8. [Клиентский SSH-конфиг](#клиентский-ssh-конфиг)
+9. [Логирование и аудит](#логирование-и-аудит)
+10. [Типичные ошибки](#типичные-ошибки)
+11. [Откат](#откат)
+12. [Итоговый чек-лист](#итоговый-чек-лист)
 
 ---
 
-## Цель
+## Целевая схема
 
-- Команда: `super`
-- Действие: вход в другую учётную запись (например `admin`) с правами `sudo`
-- Ограничение: `super` доступна только конкретному пользователю (например `ivan`)
-
-Итог для разрешённого пользователя:
-
-```bash
-super
-# сессия admin
-whoami          # admin
-sudo whoami     # root
+```text
+Клиент SSH
+    │
+    │  ssh svcsec@server   (другие УЗ по SSH — отказ)
+    ▼
+сессия svcsec
+    │
+    │  super
+    │  Password: ********   ← пароль svcsecadmin
+    ▼
+сессия svcsecadmin
+    │
+    │  sudo -i   (или sudo su -)
+    │  [sudo] password for svcsecadmin:
+    ▼
+root
 ```
 
-Для остальных пользователей команда не сработает.
+Что **не** должно работать:
+
+- SSH под `svcsecadmin`
+- SSH под `root`
+- запуск `super` от любого пользователя, кроме `svcsec`
+- прямой `sudo` у `svcsec` к root (по этой схеме не нужен)
 
 ---
 
-## Подготовка пользователей
+## Порядок настройки
 
-### Целевая УЗ (куда переключаемся)
+Делайте на консоли или из уже рабочей SSH-сессии с правами администратора.  
+Если настраиваете удалённо — **не закрывайте** текущую сессию, пока не проверите вход под `svcsec` из второго терминала.
+
+1. Создать/проверить УЗ `svcsec` и `svcsecadmin`  
+2. Дать `svcsecadmin` права `sudo` (группа `wheel`)  
+3. Создать команду `/usr/local/bin/super` (только для `svcsec`, внутри — `su - svcsecadmin`)  
+4. Ограничить SSH: только `svcsec`  
+5. Проверить цепочку: SSH → `super` → `sudo -i`
+
+---
+
+## Создание пользователей
+
+### svcsec — вход по SSH
 
 ```bash
-# создать пользователя admin (если его ещё нет)
-sudo useradd -m -s /bin/bash admin
+# если пользователя ещё нет
+sudo useradd -m -s /bin/bash svcsec
+sudo passwd svcsec
 
-# задать пароль (по желанию; при схеме через sudo пароль admin не нужен)
-sudo passwd admin
-
-# дать admin права sudo через группу wheel
-sudo usermod -aG wheel admin
+# для входа по ключу (предпочтительно)
+sudo mkdir -p /home/svcsec/.ssh
+sudo chmod 700 /home/svcsec/.ssh
+# положите публичный ключ в authorized_keys
+# sudo tee /home/svcsec/.ssh/authorized_keys < /path/to/svcsec.pub
+sudo chmod 600 /home/svcsec/.ssh/authorized_keys
+sudo chown -R svcsec:svcsec /home/svcsec/.ssh
 ```
 
-Проверка группы `wheel` в sudoers:
+`svcsec` **не** обязан быть в группе `wheel`. Для повседневной работы ему достаточно `super`.
+
+### svcsecadmin — локальный админ с sudo
+
+```bash
+sudo useradd -m -s /bin/bash svcsecadmin
+sudo passwd svcsecadmin
+sudo usermod -aG wheel svcsecadmin
+```
+
+Проверка групп:
+
+```bash
+id svcsec
+id svcsecadmin
+# svcsecadmin должен содержать wheel
+```
+
+> Пароль `svcsecadmin` будет запрашиваться при каждом `super`. Храните его отдельно от пароля/ключа `svcsec`.
+
+---
+
+## Права sudo у svcsecadmin
+
+Проверьте, что группа `wheel` разрешена в sudoers:
 
 ```bash
 sudo grep -E '^%wheel|^# %wheel' /etc/sudoers
 ```
 
-Должно быть что-то вроде:
+Нужна активная строка:
 
 ```text
 %wheel  ALL=(ALL)       ALL
 ```
 
-Если строка закомментирована — раскомментируйте через `visudo`:
+Если закомментировано:
 
 ```bash
 sudo visudo
 ```
 
-### Пользователь, которому разрешён `super`
+Раскомментируйте `%wheel ALL=(ALL) ALL`.
+
+Проверка от имени `svcsecadmin` (локально или после `super`):
 
 ```bash
-# пример: пользователь ivan уже существует
-id ivan
-```
-
----
-
-## Создание команды `super`
-
-Создайте скрипт:
-
-```bash
-sudo tee /usr/local/bin/super << 'EOF'
-#!/bin/bash
-# Переключение на привилегированную УЗ
-TARGET_USER="admin"
-
-# запрет запуска от root напрямую (по желанию)
-if [ "$(id -u)" -eq 0 ]; then
-  echo "Запустите super от имени обычного пользователя."
-  exit 1
-fi
-
-# вход в интерактивную сессию TARGET_USER
-exec sudo -u "$TARGET_USER" -i
-EOF
-```
-
-Права:
-
-```bash
-sudo chown root:root /usr/local/bin/super
-sudo chmod 755 /usr/local/bin/super
-```
-
-Пока скрипт могут видеть все, но **реально выполнить переключение** сможет только тот, кому разрешено в `sudoers` (следующий раздел).
-
----
-
-## Разрешить `super` только одному пользователю
-
-Редактируйте sudoers **только через visudo**:
-
-```bash
-sudo visudo
-```
-
-Или отдельный файл (предпочтительнее):
-
-```bash
-sudo visudo -f /etc/sudoers.d/super-command
-```
-
-Пример содержимого:
-
-```text
-# Пользователь ivan может запускать /usr/local/bin/super без пароля
-ivan ALL=(root) NOPASSWD: /usr/local/bin/super
-
-# Важно: внутри super вызывается sudo -u admin -i
-# поэтому ivan должен иметь право выполнять именно это:
-ivan ALL=(root) NOPASSWD: /usr/bin/sudo -u admin -i
-```
-
-Чище сделать так, чтобы `super` вызывался **через sudo**, а внутри уже шёл `su` / `runuser`.
-
-### Более простой вариант через `su`
-
-Перепишите `/usr/local/bin/super`:
-
-```bash
-sudo tee /usr/local/bin/super << 'EOF'
-#!/bin/bash
-TARGET_USER="admin"
-exec /usr/bin/su - "$TARGET_USER"
-EOF
-
-sudo chown root:root /usr/local/bin/super
-sudo chmod 755 /usr/local/bin/super
-```
-
-Sudoers:
-
-```bash
-sudo visudo -f /etc/sudoers.d/super-command
-```
-
-```text
-# Только ivan может запускать команду super
-Defaults!/usr/local/bin/super !requiretty
-ivan ALL=(root) NOPASSWD: /usr/local/bin/super
-```
-
-Тогда пользователь запускает:
-
-```bash
-sudo super
-```
-
-Чтобы писать просто `super` (без `sudo`), добавьте alias **только** пользователю `ivan`:
-
-```bash
-# от имени ivan
-echo 'alias super="sudo /usr/local/bin/super"' >> ~/.bashrc
-source ~/.bashrc
-```
-
----
-
-## Рекомендуемый вариант (просто `super`)
-
-Скрипт с проверкой пользователя и автозапуском через `sudo`:
-
-```bash
-sudo tee /usr/local/bin/super << 'EOF'
-#!/bin/bash
-ALLOWED_USER="ivan"
-TARGET_USER="admin"
-
-# кто реально запустил (учитываем sudo)
-REAL_USER="${SUDO_USER:-$USER}"
-
-if [ "$REAL_USER" != "$ALLOWED_USER" ]; then
-  echo "Доступ запрещён: команду super может использовать только $ALLOWED_USER"
-  exit 1
-fi
-
-# если уже root (через sudo), просто переключаемся
-if [ "$(id -u)" -eq 0 ]; then
-  exec /sbin/runuser -l "$TARGET_USER"
-fi
-
-# иначе перезапускаем себя через sudo
-exec /usr/bin/sudo /usr/local/bin/super
-EOF
-
-sudo chown root:root /usr/local/bin/super
-sudo chmod 755 /usr/local/bin/super
-```
-
-Sudoers:
-
-```bash
-sudo visudo -f /etc/sudoers.d/super-command
-```
-
-```text
-ivan ALL=(root) NOPASSWD: /usr/local/bin/super
-```
-
-Проверка синтаксиса:
-
-```bash
-sudo visudo -c
-```
-
-> На РЕД ОС удобно использовать `/sbin/runuser -l admin` вместо `su - admin`: не спрашивает пароль целевой УЗ, когда скрипт уже выполняется от root.
-
----
-
-## Ужесточение прав на файл
-
-Если нужно, чтобы файл `super` вообще не мог запускать никто, кроме `ivan` (и root):
-
-```bash
-# создать группу только для этой команды
-sudo groupadd superusers
-sudo usermod -aG superusers ivan
-
-# права: читать/выполнять только владелец и группа
-sudo chown root:superusers /usr/local/bin/super
-sudo chmod 750 /usr/local/bin/super
-```
-
-После смены группы пользователь должен перелогиниться:
-
-```bash
-# выход и новый вход в сессию
-# либо:
-newgrp superusers
-```
-
-Это **дополнение** к sudoers, не замена: sudoers контролирует повышение привилегий, права файла — видимость и запуск бинарника.
-
----
-
-## Примеры использования
-
-### От разрешённого пользователя
-
-```bash
-su - ivan
-super
-# попадаете в сессию admin
-whoami
-# admin
+sudo -l
 sudo whoami
 # root
 ```
 
-### От другого пользователя
+Опционально: отдельное правило только для `svcsecadmin` (вместо/дополнительно к wheel):
 
 ```bash
-su - petr
-super
-# Доступ запрещён: команду super может использовать только ivan
-# или: Sorry, user petr is not allowed to execute ...
+sudo visudo -f /etc/sudoers.d/svcsecadmin
 ```
 
-### Проверка правил sudo
+```text
+svcsecadmin ALL=(ALL) ALL
+```
 
 ```bash
-sudo -l -U ivan
-sudo -l -U petr
+sudo chmod 440 /etc/sudoers.d/svcsecadmin
+sudo visudo -c
 ```
-
-У `ivan` должно быть разрешение на `/usr/local/bin/super`, у `petr` — нет.
 
 ---
 
-## Логирование
+## Команда `super`
 
-В sudoers:
+Идея: `super` — обёртка над `su - svcsecadmin`.  
+`su` запросит **пароль `svcsecadmin`**.  
+Запускать файл может только `svcsec` (права на бинарник + проверка внутри скрипта).
 
-```text
-Defaults!/usr/local/bin/super log_output
-ivan ALL=(root) NOPASSWD: /usr/local/bin/super
-```
-
-Смотреть журнал:
+### 1) Группа доступа к команде
 
 ```bash
-sudo journalctl -u sudo -e
-# или
-sudo grep super /var/log/secure
+sudo groupadd -f superusers
+sudo usermod -aG superusers svcsec
 ```
 
-В РЕД ОС / RHEL аутентификация sudo обычно пишется в `/var/log/secure`.
+Пользователь `svcsec` должен перелогиниться (или `newgrp superusers`), чтобы группа применилась в текущей сессии.
+
+### 2) Скрипт
+
+```bash
+sudo tee /usr/local/bin/super << 'EOF'
+#!/bin/bash
+# super: svcsec -> svcsecadmin (пароль svcsecadmin)
+set -euo pipefail
+
+ALLOWED_USER="svcsec"
+TARGET_USER="svcsecadmin"
+
+CURRENT_USER="$(id -un)"
+
+if [ "$CURRENT_USER" != "$ALLOWED_USER" ]; then
+  echo "Доступ запрещён: команду super может запускать только ${ALLOWED_USER}" >&2
+  exit 1
+fi
+
+if [ "$(id -u)" -eq 0 ]; then
+  echo "Не запускайте super от root. Войдите как ${ALLOWED_USER}." >&2
+  exit 1
+fi
+
+# Запрос пароля TARGET_USER и login-shell
+exec /usr/bin/su - "$TARGET_USER"
+EOF
+```
+
+Права: владелец root, группа `superusers`, выполнять могут только они:
+
+```bash
+sudo chown root:superusers /usr/local/bin/super
+sudo chmod 750 /usr/local/bin/super
+# проверка
+ls -l /usr/local/bin/super
+# -rwxr-x---. 1 root superusers ... /usr/local/bin/super
+```
+
+Почему так:
+
+- `750` + группа `superusers` → другие локальные УЗ файл не запустят  
+- проверка `CURRENT_USER` → даже при ошибочных правах сработает отказ  
+- `su - svcsecadmin` → нужен пароль именно `svcsecadmin`, без NOPASSWD sudo
+
+### 3) PATH
+
+`/usr/local/bin` обычно уже в PATH. Проверка от `svcsec`:
+
+```bash
+su - svcsec -c 'command -v super; type super'
+```
+
+Если команда не находится:
+
+```bash
+# в профиле svcsec
+echo 'export PATH="/usr/local/bin:$PATH"' | sudo tee -a /home/svcsec/.bashrc
+```
+
+### 4) Важно: не путать с sudo NOPASSWD
+
+Для этой схемы **не нужно** правило вида:
+
+```text
+svcsec ALL=(root) NOPASSWD: /usr/local/bin/super
+```
+
+Иначе можно случайно обойти запрос пароля `svcsecadmin` (если внутри скрипта использовать `runuser`/`sudo -u` от root).  
+Здесь намеренно используется обычный `su`, чтобы пароль спрашивался всегда.
+
+---
+
+## SSH: вход только для svcsec
+
+Нужно запретить SSH для `svcsecadmin`, `root` и любых других УЗ.
+
+### Drop-in конфиг (предпочтительно)
+
+```bash
+sudo tee /etc/ssh/sshd_config.d/99-allow-svcsec-only.conf << 'EOF'
+# Удалённый вход только под svcsec
+AllowUsers svcsec
+
+PermitRootLogin no
+PasswordAuthentication no
+PubkeyAuthentication yes
+EOF
+```
+
+Если парольный вход для `svcsec` всё же нужен (хуже по безопасности):
+
+```text
+PasswordAuthentication yes
+```
+
+Но лучше ключи.
+
+### Проверка, что нет конфликтов
+
+```bash
+grep -RniE '^\s*(AllowUsers|DenyUsers|PermitRootLogin)\b' /etc/ssh/sshd_config /etc/ssh/sshd_config.d/
+```
+
+Если где-то уже есть другой `AllowUsers` — оставьте **один** итоговый список. При нескольких `AllowUsers` поведение зависит от порядка include; надёжнее держать правило в одном файле.
+
+### Применить
+
+```bash
+sudo sshd -t
+sudo systemctl restart sshd
+sudo systemctl status sshd --no-pager
+```
+
+### Проверки доступа
+
+Со **второго** терминала:
+
+```bash
+# должно работать
+ssh svcsec@SERVER_IP
+
+# должно быть отказано
+ssh svcsecadmin@SERVER_IP
+ssh root@SERVER_IP
+```
+
+Дополнительно можно явно запретить админскую УЗ:
+
+```text
+DenyUsers svcsecadmin root
+AllowUsers svcsec
+```
+
+`AllowUsers svcsec` уже достаточно, если других пользователей в списке нет.
+
+> Если у вас также сменён порт SSH / ограничение по IP — совместите с инструкцией [`redos-ssh-port-selinux.md`](redos-ssh-port-selinux.md): в `AllowUsers` должен остаться только `svcsec` (при необходимости `svcsec@IP`).
+
+Пример совмещения с IP:
+
+```text
+AllowUsers svcsec@203.0.113.50
+PermitRootLogin no
+```
+
+---
+
+## Проверка от начала до конца
+
+### 1) SSH под svcsec
+
+```bash
+ssh svcsec@SERVER_IP
+whoami
+# svcsec
+```
+
+### 2) Команда super
+
+```bash
+super
+# Password:   ← введите пароль svcsecadmin
+whoami
+# svcsecadmin
+id
+# ... groups=...wheel...
+```
+
+### 3) Root через sudo
+
+```bash
+sudo -i
+# [sudo] password for svcsecadmin:
+whoami
+# root
+```
+
+Или без полной login-shell:
+
+```bash
+sudo whoami
+# root
+sudo -u root -i
+```
+
+### 4) Негативные проверки
+
+```bash
+# от другого локального пользователя (если есть)
+su - otheruser -c 'super'
+# Permission denied / Доступ запрещён
+
+# SSH чужой УЗ
+ssh svcsecadmin@SERVER_IP
+# Permission denied
+```
+
+---
+
+## Клиентский SSH-конфиг
+
+На рабочей станции (`~/.ssh/config`):
+
+```sshconfig
+Host redos-sec
+    HostName 192.0.2.10
+    User svcsec
+    Port 22
+    # Port 2242
+    IdentityFile ~/.ssh/id_ed25519_svcsec
+    IdentitiesOnly yes
+```
+
+Подключение:
+
+```bash
+ssh redos-sec
+super
+sudo -i
+```
+
+Права на клиенте:
+
+```bash
+chmod 700 ~/.ssh
+chmod 600 ~/.ssh/config ~/.ssh/id_ed25519_svcsec
+```
+
+---
+
+## Логирование и аудит
+
+Полезные журналы на РЕД ОС:
+
+```bash
+# SSH-входы
+sudo grep -E 'sshd|Accepted|Failed' /var/log/secure | tail -n 50
+
+# su / super
+sudo grep -E 'su:|sudo:' /var/log/secure | tail -n 50
+
+# journald
+sudo journalctl -u sshd -e --no-pager
+```
+
+Успешный `super` обычно виден как `su` от `svcsec` к `svcsecadmin`.  
+`sudo` от `svcsecadmin` к root — отдельными записями `sudo`.
 
 ---
 
 ## Типичные ошибки
 
-| Симптом | Причина | Что сделать |
+| Симптом | Причина | Решение |
 |---|---|---|
-| `command not found` | нет в PATH | путь `/usr/local/bin` должен быть в `$PATH` |
-| `Sorry, user ... is not allowed` | нет правила sudoers | проверить `/etc/sudoers.d/super-command` |
-| `authentication failed` / просит пароль | нет `NOPASSWD` | добавить `NOPASSWD:` |
-| `Permission denied` на файле | chmod/chown | `750` + группа `superusers` |
-| `su: Authentication failure` | `su` без root | запускать `super` через sudo; внутри — `runuser` / `su` от root |
+| `super: command not found` | нет в PATH / нет файла | проверить `/usr/local/bin/super`, PATH у `svcsec` |
+| `Permission denied` при запуске `super` | не в группе `superusers` или chmod не 750 | `id svcsec`, перелогин, `chown root:superusers`, `chmod 750` |
+| `Доступ запрещён: ... только svcsec` | запущено не от `svcsec` | войти по SSH как `svcsec` |
+| `su: Authentication failure` | неверный пароль `svcsecadmin` | `passwd svcsecadmin` (от уже имеющегося админа) |
+| `svcsecadmin is not in the sudoers file` | нет `wheel` / правила sudo | `usermod -aG wheel svcsecadmin`, проверить `%wheel` в sudoers |
+| SSH пускает `svcsecadmin` | нет/не применён `AllowUsers` | drop-in + `sshd -t` + `systemctl restart sshd` |
+| После правки SSH потеряли доступ | ошибочный `AllowUsers` | чинить с консоли/IPMI; вернуть бэкап `sshd_config` |
+| `super` не просит пароль и сразу root | ошибочно настроен NOPASSWD/`runuser` от root | вернуть скрипт на `exec /usr/bin/su - svcsecadmin` |
+
+Бэкап SSH перед правками:
+
+```bash
+sudo cp -a /etc/ssh/sshd_config "/etc/ssh/sshd_config.bak.$(date +%F_%H%M%S)"
+```
 
 ---
 
-## Минимальный рабочий набор
+## Откат
 
 ```bash
-# 1) целевая УЗ
-sudo useradd -m -s /bin/bash admin
-sudo usermod -aG wheel admin
+# убрать команду
+sudo rm -f /usr/local/bin/super
+sudo groupdel superusers 2>/dev/null || true
 
-# 2) команда
+# убрать SSH-ограничение (осторожно: снова откроет вход другим УЗ)
+sudo rm -f /etc/ssh/sshd_config.d/99-allow-svcsec-only.conf
+sudo sshd -t && sudo systemctl restart sshd
+
+# при необходимости удалить УЗ (только если уверены)
+# sudo userdel -r svcsecadmin
+```
+
+---
+
+## Итоговый чек-лист
+
+```bash
+# === пользователи ===
+sudo useradd -m -s /bin/bash svcsec        2>/dev/null || true
+sudo useradd -m -s /bin/bash svcsecadmin   2>/dev/null || true
+sudo passwd svcsec
+sudo passwd svcsecadmin
+sudo usermod -aG wheel svcsecadmin
+
+# === группа и команда super ===
+sudo groupadd -f superusers
+sudo usermod -aG superusers svcsec
+
 sudo tee /usr/local/bin/super << 'EOF'
 #!/bin/bash
-ALLOWED_USER="ivan"
-TARGET_USER="admin"
-REAL_USER="${SUDO_USER:-$USER}"
-[ "$REAL_USER" = "$ALLOWED_USER" ] || { echo "Доступ запрещён"; exit 1; }
-[ "$(id -u)" -eq 0 ] || exec /usr/bin/sudo "$0"
-exec /sbin/runuser -l "$TARGET_USER"
+set -euo pipefail
+ALLOWED_USER="svcsec"
+TARGET_USER="svcsecadmin"
+CURRENT_USER="$(id -un)"
+[ "$CURRENT_USER" = "$ALLOWED_USER" ] || { echo "Доступ запрещён: только ${ALLOWED_USER}" >&2; exit 1; }
+[ "$(id -u)" -ne 0 ] || { echo "Не запускайте super от root." >&2; exit 1; }
+exec /usr/bin/su - "$TARGET_USER"
 EOF
-sudo chown root:root /usr/local/bin/super
-sudo chmod 755 /usr/local/bin/super
+sudo chown root:superusers /usr/local/bin/super
+sudo chmod 750 /usr/local/bin/super
 
-# 3) sudoers только для ivan
-echo 'ivan ALL=(root) NOPASSWD: /usr/local/bin/super' | sudo tee /etc/sudoers.d/super-command
-sudo chmod 440 /etc/sudoers.d/super-command
-sudo visudo -c
+# === SSH только svcsec ===
+sudo tee /etc/ssh/sshd_config.d/99-allow-svcsec-only.conf << 'EOF'
+AllowUsers svcsec
+PermitRootLogin no
+PasswordAuthentication no
+PubkeyAuthentication yes
+EOF
+sudo sshd -t && sudo systemctl restart sshd
+
+# === проверки ===
+# 1) ssh svcsec@SERVER
+# 2) newgrp superusers   # если группа ещё не подхватилась
+# 3) super               # пароль svcsecadmin
+# 4) sudo -i             # пароль svcsecadmin
+# 5) ssh svcsecadmin@SERVER  → отказ
 ```
 
-После этого у `ivan`:
+Итог после настройки:
 
-```bash
-super
-```
-
-откроется сессия `admin` с правами `sudo`, а у остальных пользователей команда не сработает.
-
----
-
-## Варианты: с паролем и сразу в root
-
-### С запросом пароля (без `NOPASSWD`)
-
-В `/etc/sudoers.d/super-command`:
-
-```text
-ivan ALL=(root) /usr/local/bin/super
-```
-
-Тогда при каждом `super` у `ivan` будет запрашиваться **его** пароль (не пароль `admin`).
-
-### Переключение сразу в root
-
-В скрипте замените целевую УЗ:
-
-```bash
-TARGET_USER="root"
-# ...
-exec /sbin/runuser -l root
-# или:
-# exec /bin/bash -l
-```
-
-И в sudoers оставьте разрешение только на `/usr/local/bin/super` для нужного пользователя.
-
-> Давать прямой вход в root через `super` удобно, но риск выше: любой, кто скомпрометировал разрешённую УЗ, сразу получает root. Предпочтительнее отдельная УЗ `admin` в `wheel`.
+- по SSH заходит только `svcsec`
+- `super` доступен только `svcsec` и спрашивает пароль `svcsecadmin`
+- `svcsecadmin` получает shell с `sudo`
+- `root` — только через `sudo` от `svcsecadmin`
