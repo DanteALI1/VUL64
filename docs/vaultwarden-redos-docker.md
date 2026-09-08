@@ -286,7 +286,10 @@ sudo firewall-cmd --reload
 
 ### B2. nginx
 
-`/opt/vaultwarden/nginx/nginx.conf`:
+На РЕД ОС не проксируйте на `vaultwarden:80` / `172.18.0.x` — firewalld часто даёт 502.  
+Рекомендуется: nginx в `network_mode: host` → `127.0.0.1:8787`.
+
+`/opt/vaultwarden/nginx/nginx.conf` (порты по умолчанию 8080/8443):
 
 ```nginx
 worker_processes auto;
@@ -299,13 +302,13 @@ http {
     }
 
     server {
-        listen 80;
+        listen 8080;
         server_name vault.example.local;
-        return 301 https://$host$request_uri;
+        return 301 https://$host:8443$request_uri;
     }
 
     server {
-        listen 443 ssl;
+        listen 8443 ssl;
         http2 on;
         server_name vault.example.local;
 
@@ -320,14 +323,10 @@ http {
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Proto https;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection $connection_upgrade;
-            # Docker DNS (избегает 502 Host is unreachable со старым IP)
-            # resolver 127.0.0.11 valid=10s ipv6=off;
-            # set $vw_upstream vaultwarden;
-            # proxy_pass http://$vw_upstream:80;
-            proxy_pass http://vaultwarden:80;
+            proxy_pass http://127.0.0.1:8787;
         }
     }
 }
@@ -344,13 +343,13 @@ services:
     container_name: vaultwarden
     restart: unless-stopped
     environment:
-      DOMAIN: "https://vault.example.local"
+      DOMAIN: "https://vault.example.local:8443"
       SIGNUPS_ALLOWED: "true"
       ADMIN_TOKEN: "ВСТАВЬТЕ_ТОКЕН"
     volumes:
       - ./data:/data
-    networks:
-      - vwnet
+    ports:
+      - "127.0.0.1:8787:80"
 
   nginx:
     image: nginx:alpine
@@ -358,17 +357,10 @@ services:
     restart: unless-stopped
     depends_on:
       - vaultwarden
-    ports:
-      - "80:80"
-      - "443:443"
+    network_mode: host
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/certs:ro
-    networks:
-      - vwnet
-
-networks:
-  vwnet:
 ```
 
 `DOMAIN` должен совпадать со схемой и именем/IP, которыми вы заходите в браузер (без двойных слэшей в URL).
@@ -446,16 +438,18 @@ chmod +x scripts/fix-vaultwarden-502-host-gateway.sh
 sudo ./scripts/fix-vaultwarden-502-host-gateway.sh
 ```
 
-Скрипт переведёт схему на: nginx → `host.docker.internal` → `127.0.0.1:8787` → Vaultwarden (минуя сломанную Docker-сеть).
+Скрипт ставит схему, которая работает на РЕД ОС даже когда Docker-сеть и `host.docker.internal` недоступны:
+
+`браузер → nginx (network_mode: host, :8443) → 127.0.0.1:8787 → vaultwarden`
 
 Проверка:
 
 ```bash
 curl -sI http://127.0.0.1:8787/ | head
-sudo docker exec vaultwarden-nginx wget -qO- http://host.docker.internal:8787/ | head
+curl -kI https://127.0.0.1:8443/ | head
 ```
 
-Затем снова: `https://vaultwarden.cloud.novatek.ru:8443/` или `https://10.0.50.114:8443/`.
+Затем: `https://vaultwarden.cloud.novatek.ru:8443/` или `https://10.0.50.114:8443/`.
 
 ### Альтернатива: firewalld
 
@@ -468,7 +462,7 @@ sudo systemctl restart docker
 cd /opt/vaultwarden && sudo docker compose up -d
 ```
 
-Если после firewalld `wget http://vaultwarden:80` из nginx всё ещё `Host is unreachable` — используйте быстрый фикс выше.
+Если после firewalld / `host.docker.internal` снова 502 — используйте быстрый фикс выше (`network_mode: host`).
 
 ### Порты 80/443 уже заняты
 
