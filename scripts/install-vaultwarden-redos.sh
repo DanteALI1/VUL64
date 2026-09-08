@@ -288,27 +288,24 @@ write_https_stack() {
   local domain
   domain="$(https_url)"
 
-  # Vaultwarden слушает только 127.0.0.1:BACKEND_PORT на хосте.
-  # nginx ходит туда через host.docker.internal — так не ломается firewalld
-  # на РЕД ОС (иначе типичный 502: Host is unreachable до 172.18.0.x).
+  # РЕД ОС: Docker-сеть и host.docker.internal часто режет firewalld.
+  # Надёжная схема: vaultwarden на 127.0.0.1:BACKEND_PORT,
+  # nginx с network_mode:host проксирует на 127.0.0.1.
   cat > "${INSTALL_ROOT}/nginx/nginx.conf" <<EOF
 worker_processes auto;
 events { worker_connections 1024; }
 http {
-    # Docker DNS + host-gateway
-    resolver 127.0.0.11 valid=10s ipv6=off;
-
     map \$http_upgrade \$connection_upgrade {
         default upgrade;
         ''      close;
     }
     server {
-        listen 80;
+        listen ${HTTP_PORT};
         server_name ${FQDN};
-        return 301 https://\$host\$request_uri;
+        return 301 https://\$host:${HTTPS_PORT}\$request_uri;
     }
     server {
-        listen 443 ssl;
+        listen ${HTTPS_PORT} ssl;
         http2 on;
         server_name ${FQDN};
         ssl_certificate     /etc/nginx/certs/fullchain.pem;
@@ -316,15 +313,14 @@ http {
         ssl_protocols       TLSv1.2 TLSv1.3;
         client_max_body_size 128M;
         location / {
-            set \$vw_upstream host.docker.internal;
             proxy_http_version 1.1;
             proxy_set_header Host \$host;
             proxy_set_header X-Real-IP \$remote_addr;
             proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto \$scheme;
+            proxy_set_header X-Forwarded-Proto https;
             proxy_set_header Upgrade \$http_upgrade;
             proxy_set_header Connection \$connection_upgrade;
-            proxy_pass http://\$vw_upstream:${BACKEND_PORT};
+            proxy_pass http://127.0.0.1:${BACKEND_PORT};
             proxy_connect_timeout 5s;
             proxy_read_timeout 300s;
         }
@@ -353,11 +349,7 @@ services:
     restart: unless-stopped
     depends_on:
       - vaultwarden
-    ports:
-      - "${HTTP_PORT}:80"
-      - "${HTTPS_PORT}:443"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    network_mode: host
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/certs:ro
@@ -423,17 +415,12 @@ start_stack() {
   sleep 3
   docker compose ps
 
-  # проверка, что vaultwarden реально отвечает
+  # проверка backend + HTTPS на host-network nginx
   local i
   for i in $(seq 1 20); do
     if curl -fsS "http://127.0.0.1:${BACKEND_PORT}/" >/dev/null 2>&1 \
        || wget -qO- "http://127.0.0.1:${BACKEND_PORT}/" >/dev/null 2>&1; then
       ok "Vaultwarden отвечает на 127.0.0.1:${BACKEND_PORT}"
-      break
-    fi
-    # из nginx через host-gateway
-    if docker compose exec -T nginx wget -qO- "http://host.docker.internal:${BACKEND_PORT}/" >/dev/null 2>&1; then
-      ok "Vaultwarden доступен nginx через host.docker.internal"
       break
     fi
     sleep 1
@@ -442,6 +429,15 @@ start_stack() {
       die "Vaultwarden не отвечает на 127.0.0.1:${BACKEND_PORT}. Смотрите логи выше."
     fi
   done
+  sleep 2
+  if curl -kfsS "https://127.0.0.1:${HTTPS_PORT}/" >/dev/null 2>&1 \
+     || wget --no-check-certificate -qO- "https://127.0.0.1:${HTTPS_PORT}/" >/dev/null 2>&1; then
+    ok "HTTPS отвечает на :${HTTPS_PORT}"
+  else
+    docker compose logs --tail=30 nginx || true
+    ss -tlnp | grep -E ":${HTTPS_PORT}\\b" || true
+    die "nginx (host network) не отвечает на :${HTTPS_PORT}"
+  fi
   ok "стек запущен"
 }
 
