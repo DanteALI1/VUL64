@@ -9,44 +9,46 @@
 #   3) (опционально) подключает репозиторий Ansible 6.x на РЕД ОС 7.3
 #   4) создаёт /etc/ansible/ansible.cfg с разумными значениями по умолчанию
 #   5) создаёт /etc/ansible/hosts (и/или проектный inventory) с подсказками
-#   6) (опционально) генерирует SSH-ключ для подключений к узлам
-#   7) выводит чеклист следующих шагов (ssh-copy-id, ansible ping, плейбук)
+#   6) (опционально) генерирует SSH-ключ
+#   7) (опционально) защищённый каталог ключей + один владелец
+#   8) выводит чеклист следующих шагов
 #
 # Документация: docs/ansible-redos.md
-# БЗ РЕД ОС 8:  https://redos.red-soft.ru/base/redos-8_0/8_0-administation/8_0-remote-admin/8_0-ansible/
-# БЗ РЕД ОС 7.3: https://redos.red-soft.ru/base/redos-7_3/7_3-administation/7_3-remote-admin/7_3-ansible/
 #
 # Примеры:
 #   sudo ./scripts/install-ansible-redos.sh
 #   sudo ./scripts/install-ansible-redos.sh --ansible6
 #   sudo ./scripts/install-ansible-redos.sh --hosts '10.0.0.11,10.0.0.12' --remote-user admin
 #   sudo ./scripts/install-ansible-redos.sh --generate-ssh-key --ssh-user admin
-#   sudo ./scripts/install-ansible-redos.sh --project-dir /opt/ansible --force
+#
+#   # Защищённый каталог ключей: только пользователь ansible-keys может читать/двигать ключи
+#   sudo ./scripts/install-ansible-redos.sh --secure-keys \
+#     --hosts '192.168.1.10' --remote-user admin
 #
 # =============================================================================
 
 set -euo pipefail
 
 # --------------------------- значения по умолчанию ---------------------------
-# ANSIBLE6=1  — сначала поставить ansible6-release (РЕД ОС 7.3, Ansible 6.x)
 ANSIBLE6=0
-# Список хостов через запятую → попадут в inventory (IP или DNS)
 HOSTS=""
-# Пользователь SSH на удалённых узлах (ansible_user)
 REMOTE_USER=""
-# Создать SSH-ключ для пользователя, от которого потом будете запускать ansible
 GENERATE_SSH_KEY=0
-# Для кого генерировать ключ: если скрипт через sudo — берём SUDO_USER, иначе root
+# Обычный режим: ключ в ~/.ssh пользователя
 SSH_USER=""
-# Каталог «проектного» ansible (ansible.cfg + inventory рядом) — удобно для команды
 PROJECT_DIR=""
-# Перезаписывать уже существующие конфиги
 FORCE=0
-# Ставить sshpass (нужен для ansible -k / парольной аутентификации)
 INSTALL_SSHPASS=1
-# Пути системных файлов Ansible
 SYSTEM_CFG="/etc/ansible/ansible.cfg"
 SYSTEM_HOSTS="/etc/ansible/hosts"
+
+# Защищённое хранилище ключей (режим --secure-keys)
+SECURE_KEYS=0
+KEY_DIR="/var/lib/ansible-keys"
+KEY_OWNER="ansible-keys"
+# Итоговый путь к приватному ключу (заполняется позже)
+KEY_PATH=""
+KEY_PUB=""
 
 usage() {
   cat <<'EOF'
@@ -57,12 +59,27 @@ usage() {
   --ansible6              РЕД ОС 7.3: подключить ansible6-release, затем поставить ansible
   --hosts LIST            хосты через запятую (пример: 192.168.0.10,web1.local)
   --remote-user NAME      ansible_user для всех хостов в inventory
-  --generate-ssh-key      сгенерировать ~/.ssh/id_ed25519 (если ещё нет)
-  --ssh-user NAME         от чьего имени создать ключ (по умолчанию $SUDO_USER)
+  --generate-ssh-key      сгенерировать SSH-ключ (см. режимы ниже)
+  --ssh-user NAME         обычный режим: ключ в home этого пользователя (~/.ssh)
+  --secure-keys           защищённый каталог ключей + один владелец (рекомендуется)
+  --key-dir PATH          каталог ключей (по умолчанию /var/lib/ansible-keys)
+  --key-owner NAME        единственный владелец каталога (по умолчанию ansible-keys)
   --project-dir PATH      дополнительно создать проект: PATH/ansible.cfg + PATH/inventory/hosts
   --no-sshpass            не устанавливать sshpass
-  --force                 перезаписать ansible.cfg / hosts, если уже есть
+  --force                 перезаписать ansible.cfg / hosts / ключи, если уже есть
   -h, --help              эта справка
+
+Где лежат ключи:
+  Обычный режим (--generate-ssh-key):
+    /home/<ssh-user>/.ssh/id_ed25519
+
+  Защищённый режим (--secure-keys):
+    /var/lib/ansible-keys/id_ed25519          (приватный, chmod 600)
+    /var/lib/ansible-keys/id_ed25519.pub      (публичный)
+    /var/lib/ansible-keys/archive/            (сюда можно перемещать старые ключи)
+    Владелец каталога и файлов: только --key-owner (по умолчанию ansible-keys).
+    Другие обычные пользователи НЕ могут читать/перемещать ключи.
+    Root по-прежнему может всё (ограничение ОС).
 
 Типовые сценарии:
   # 1) Только поставить Ansible на РЕД ОС 8
@@ -71,32 +88,32 @@ usage() {
   # 2) РЕД ОС 7.3 + Ansible 6.x
   sudo ./scripts/install-ansible-redos.sh --ansible6
 
-  # 3) Сразу прописать 2 сервера и пользователя SSH
-  sudo ./scripts/install-ansible-redos.sh \
-    --hosts '192.168.1.10,192.168.1.11' \
-    --remote-user admin \
-    --generate-ssh-key
+  # 3) Ключ в домашнем каталоге admin
+  sudo ./scripts/install-ansible-redos.sh --generate-ssh-key --ssh-user admin
 
-После установки разложите ключ и проверьте связь:
-  ssh-copy-id -i ~/.ssh/id_ed25519.pub admin@192.168.1.10
-  ansible all -m ping
+  # 4) Максимально защищённый каталог + один владелец ключей
+  sudo ./scripts/install-ansible-redos.sh --secure-keys \
+    --hosts '192.168.1.10,192.168.1.11' \
+    --remote-user admin
+
+После --secure-keys работайте от имени владельца ключей:
+  sudo -u ansible-keys -H ansible all -m ping
+  sudo -u ansible-keys ssh-copy-id -i /var/lib/ansible-keys/id_ed25519.pub admin@HOST
+  # переместить старый ключ в архив (только владелец):
+  sudo -u ansible-keys mv /var/lib/ansible-keys/id_ed25519 /var/lib/ansible-keys/archive/
 EOF
 }
 
-# --------------------------- вспомогательные функции ------------------------
-# Подсказка: все сообщения идут в stderr/stdout явно, чтобы было видно прогресс.
 log()  { printf '\n==> %s\n' "$*"; }
 ok()   { printf '    OK: %s\n' "$*"; }
 hint() { printf '    💡 %s\n' "$*"; }
 die()  { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
 need_root() {
-  # Подсказка: dnf и запись в /etc/ansible требуют root.
   [[ "${EUID}" -eq 0 ]] || die "запустите через sudo (нужны права root)"
 }
 
 pkg_install() {
-  # Подсказка: на РЕД ОС основной менеджер — dnf; yum оставляем как запасной вариант.
   if command -v dnf >/dev/null 2>&1; then
     dnf install -y "$@"
   elif command -v yum >/dev/null 2>&1; then
@@ -107,7 +124,6 @@ pkg_install() {
 }
 
 detect_redos() {
-  # Подсказка: не блокируем установку на «похожих» системах, но предупреждаем.
   if [[ -f /etc/redos-release ]]; then
     ok "обнаружен /etc/redos-release"
     cat /etc/redos-release | sed 's/^/    /' || true
@@ -132,6 +148,75 @@ backup_if_exists() {
   fi
 }
 
+ensure_key_owner() {
+  # Создаёт системного пользователя — единственного владельца каталога ключей.
+  # Пароль заблокирован: вход только через «sudo -u <owner>» у тех, кто имеет sudo.
+  local user="$1"
+  local home="$2"
+  if id "$user" >/dev/null 2>&1; then
+    ok "владелец ключей уже есть: $user"
+    return 0
+  fi
+  hint "создаём системного пользователя $user (shell /bin/bash, пароль заблокирован)"
+  useradd \
+    --system \
+    --create-home \
+    --home-dir "$home" \
+    --shell /bin/bash \
+    --comment "Ansible SSH key owner" \
+    "$user"
+  passwd -l "$user" >/dev/null
+  ok "создан пользователь $user (passwd -l — вход по паролю запрещён)"
+}
+
+harden_key_dir() {
+  # Максимально жёсткие права для обычных пользователей: только владелец.
+  local dir="$1"
+  local owner="$2"
+  mkdir -p "$dir" "$dir/archive"
+  # Убрать любые ACL/лишние биты, выставить 0700
+  chmod 0700 "$dir" "$dir/archive"
+  chown -R "$owner:$owner" "$dir"
+  # sticky на каталоге не нужен при 0700; на всякий случай убираем group/other
+  chmod -R go-rwx "$dir" 2>/dev/null || true
+  # SELinux (если есть): домашний/секретный контекст не трогаем агрессивно;
+  # restorecon может помочь на РЕД ОС с enforcing.
+  if command -v restorecon >/dev/null 2>&1; then
+    restorecon -RFv "$dir" 2>/dev/null || true
+  fi
+  ok "каталог защищён: $dir (режим 0700, владелец $owner)"
+  hint "перемещать ключи может только $owner, например:"
+  printf '      sudo -u %s mv %s/id_ed25519 %s/archive/\n' "$owner" "$dir" "$dir"
+}
+
+write_key_dir_readme() {
+  local dir="$1"
+  local owner="$2"
+  cat >"$dir/README" <<EOF
+Защищённое хранилище SSH-ключей Ansible
+========================================
+Владелец (единственный, кто может читать/писать/перемещать ключи): $owner
+Каталог: $dir  (chmod 0700)
+
+Файлы:
+  id_ed25519       — приватный ключ (600)
+  id_ed25519.pub   — публичный ключ
+  archive/         — сюда перемещайте старые/отозванные ключи
+
+Важно:
+  • Обычные пользователи системы сюда не попадут (нет прав).
+  • root всё ещё может читать каталог — это ограничение Linux.
+  • Запускайте Ansible от имени владельца:
+      sudo -u $owner -H ansible all -m ping
+  • Разложить публичный ключ на узел:
+      sudo -u $owner ssh-copy-id -i $dir/id_ed25519.pub USER@HOST
+  • Переместить ключ в архив (только $owner):
+      sudo -u $owner mv $dir/id_ed25519 $dir/archive/id_ed25519.\$(date +%Y%m%d)
+EOF
+  chown "$owner:$owner" "$dir/README"
+  chmod 0600 "$dir/README"
+}
+
 # --------------------------- разбор аргументов ------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -140,6 +225,9 @@ while [[ $# -gt 0 ]]; do
     --remote-user) REMOTE_USER="${2:-}"; shift 2 ;;
     --generate-ssh-key) GENERATE_SSH_KEY=1; shift ;;
     --ssh-user) SSH_USER="${2:-}"; shift 2 ;;
+    --secure-keys) SECURE_KEYS=1; GENERATE_SSH_KEY=1; shift ;;
+    --key-dir) KEY_DIR="${2:-}"; shift 2 ;;
+    --key-owner) KEY_OWNER="${2:-}"; shift 2 ;;
     --project-dir) PROJECT_DIR="${2:-}"; shift 2 ;;
     --no-sshpass) INSTALL_SSHPASS=0; shift ;;
     --force) FORCE=1; shift ;;
@@ -148,23 +236,30 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-# Если запускали через sudo — ключ лучше делать для обычного пользователя, не для root.
 if [[ -z "$SSH_USER" ]]; then
   SSH_USER="${SUDO_USER:-root}"
 fi
 
+[[ -n "$KEY_DIR" ]] || die "пустой --key-dir"
+[[ -n "$KEY_OWNER" ]] || die "пустой --key-owner"
+# KEY_DIR должен быть абсолютным
+[[ "$KEY_DIR" == /* ]] || die "--key-dir должен быть абсолютным путём (сейчас: $KEY_DIR)"
+
 need_root
 
 # --------------------------- шаги установки ---------------------------------
-log "0/7 Проверка окружения"
+log "0/8 Проверка окружения"
 detect_redos
-ok "пользователь для SSH-ключа: $SSH_USER"
+if [[ "$SECURE_KEYS" -eq 1 ]]; then
+  ok "режим защищённых ключей: каталог=$KEY_DIR владелец=$KEY_OWNER"
+  hint "только пользователь $KEY_OWNER сможет читать и перемещать ключи (кроме root)"
+else
+  ok "пользователь для SSH-ключа (обычный режим): $SSH_USER"
+fi
 hint "Ansible ставится на УПРАВЛЯЮЩУЮ машину. На узлах агент не нужен — только SSH + Python 3."
 
-log "1/7 Подготовка репозиториев"
+log "1/8 Подготовка репозиториев"
 if [[ "$ANSIBLE6" -eq 1 ]]; then
-  # Подсказка (РЕД ОС 7.3): Ansible 6.x лежит в подключаемом репозитории.
-  # Цепочка из БЗ: ansible6-release → clean → makecache → install ansible
   hint "режим --ansible6: устанавливаем ansible6-release (РЕД ОС 7.3 / Ansible 6.x)"
   pkg_install ansible6-release
   if command -v dnf >/dev/null 2>&1; then
@@ -179,11 +274,9 @@ else
   fi
 fi
 
-log "2/7 Установка пакетов"
-# Подсказка: python3-pip / git часто полезны для ansible-galaxy и коллекций, но не обязательны.
+log "2/8 Установка пакетов"
 PKGS=(ansible)
 [[ "$INSTALL_SSHPASS" -eq 1 ]] && PKGS+=(sshpass)
-# sshpass — только для режима с паролем: ansible ... -k
 hint "пакеты к установке: ${PKGS[*]}"
 pkg_install "${PKGS[@]}"
 ok "пакеты установлены"
@@ -194,69 +287,65 @@ else
   die "команда ansible не найдена после установки — проверьте репозитории (dnf repolist)"
 fi
 
-log "3/7 Каталог /etc/ansible"
+# --------------------------- защищённый каталог (до ansible.cfg) ------------
+PRIVATE_KEY_CFG_LINE=""
+if [[ "$SECURE_KEYS" -eq 1 ]]; then
+  log "3/8 Защищённый каталог ключей"
+  ensure_key_owner "$KEY_OWNER" "$KEY_DIR"
+  harden_key_dir "$KEY_DIR" "$KEY_OWNER"
+  write_key_dir_readme "$KEY_DIR" "$KEY_OWNER"
+  KEY_PATH="${KEY_DIR}/id_ed25519"
+  KEY_PUB="${KEY_PATH}.pub"
+  PRIVATE_KEY_CFG_LINE="private_key_file = ${KEY_PATH}"
+else
+  log "3/8 Защищённый каталог ключей — пропуск (нет --secure-keys)"
+  hint "для жёсткой изоляции ключей перезапустите с --secure-keys"
+fi
+
+log "4/8 Каталог /etc/ansible"
 mkdir -p /etc/ansible
 ok "/etc/ansible готов"
 
-log "4/7 Запись ${SYSTEM_CFG}"
+log "5/8 Запись ${SYSTEM_CFG}"
 backup_if_exists "$SYSTEM_CFG"
-# Подсказка: приоритет конфигов Ansible (сверху вниз):
-#   1) переменная ANSIBLE_CONFIG
-#   2) ./ansible.cfg в текущем каталоге
-#   3) ~/.ansible.cfg
-#   4) /etc/ansible/ansible.cfg
-cat >"$SYSTEM_CFG" <<'EOF'
+cat >"$SYSTEM_CFG" <<EOF
 # Сгенерировано scripts/install-ansible-redos.sh
 # Документация: docs/ansible-redos.md
 #
 # Подсказка: для отдельного проекта лучше свой ./ansible.cfg (он перекрывает этот файл).
 
 [defaults]
-# Файл/каталог инвентаризации по умолчанию
 inventory = /etc/ansible/hosts
-
-# Не создавать .retry-файлы рядом с плейбуками
 retry_files_enabled = False
-
-# Тише про выбор интерпретатора Python на узлах
 interpreter_python = auto_silent
-
-# Параллелизм (увеличьте на мощной управляющей машине)
 forks = 20
-
-# Таймаут SSH (секунды)
 timeout = 30
-
-# Подсказка: в лаборатории False удобнее; в проде лучше True (проверка known_hosts)
+# Подсказка: в лаборатории False удобнее; в проде лучше True
 host_key_checking = False
-
-# Формат вывода (опционально раскомментируйте при установленном ansible.posix / community)
-# stdout_callback = yaml
+${PRIVATE_KEY_CFG_LINE}
 
 [privilege_escalation]
-# become = sudo на удалённом хосте (как ansible -b)
 become = True
 become_method = sudo
-# Если на узлах sudo требует пароль — запускайте с -K или поставьте True:
 become_ask_pass = False
 
 [ssh_connection]
-# Ускорение повторных подключений (ControlMaster)
 pipelining = True
 ssh_args = -o ControlMaster=auto -o ControlPersist=60s -o StrictHostKeyChecking=no
 EOF
 ok "записан $SYSTEM_CFG"
-hint "host_key_checking=False и StrictHostKeyChecking=no — удобно для теста; для прода ужесточите."
+if [[ -n "$PRIVATE_KEY_CFG_LINE" ]]; then
+  hint "в ansible.cfg прописан $PRIVATE_KEY_CFG_LINE"
+  hint "запускайте ansible от $KEY_OWNER, иначе ключ будет недоступен"
+fi
 
-log "5/7 Запись inventory ${SYSTEM_HOSTS}"
+log "6/8 Запись inventory ${SYSTEM_HOSTS}"
 backup_if_exists "$SYSTEM_HOSTS"
 
-# Собираем блок хостов из --hosts
 HOST_BLOCK=""
 if [[ -n "$HOSTS" ]]; then
   IFS=',' read -r -a HOST_ARR <<<"$HOSTS"
   for h in "${HOST_ARR[@]}"; do
-    # trim spaces
     h="$(echo "$h" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     [[ -z "$h" ]] && continue
     if [[ -n "$REMOTE_USER" ]]; then
@@ -278,45 +367,20 @@ cat >"$SYSTEM_HOSTS" <<EOF
 # Сгенерировано scripts/install-ansible-redos.sh
 # Подсказка: группы пишутся в [квадратных] скобках, ниже — список хостов.
 #
-# Примеры записей (раскомментируйте и правьте):
-#   [web]
-#   web1.example.ru
-#   192.168.0.100
-#
-#   # псевдоним + явный IP + пользователь SSH
-#   [app]
-#   app1 ansible_host=10.0.0.5 ansible_user=admin
-#
-#   # диапазон имён node01 … node10
-#   [batch]
-#   node[01:10].example.ru
-#
-#   # объединение групп
-#   [prod:children]
-#   web
-#   app
-#
 # Проверка связи (не ICMP!):  ansible all -m ping
 # С паролем SSH:              ansible all -m ping -k
 # С паролем sudo:             ansible all -m ping -K
 
 [all]
-# Локальный хост — полезно для проверки самого Ansible без сети
 localhost ansible_connection=local
 
 [servers]
 ${HOST_BLOCK}
 EOF
 ok "записан $SYSTEM_HOSTS"
-if [[ -n "$HOSTS" ]]; then
-  hint "хосты из --hosts добавлены в группу [servers]"
-else
-  hint "хосты не переданы — допишите их вручную в $SYSTEM_HOSTS"
-fi
 
-# --------------------------- проектный каталог (опционально) ---------------
 if [[ -n "$PROJECT_DIR" ]]; then
-  log "5b/7 Проектный каталог: $PROJECT_DIR"
+  log "6b/8 Проектный каталог: $PROJECT_DIR"
   mkdir -p "$PROJECT_DIR/inventory" "$PROJECT_DIR/playbooks"
   backup_if_exists "$PROJECT_DIR/ansible.cfg"
   backup_if_exists "$PROJECT_DIR/inventory/hosts"
@@ -329,6 +393,7 @@ retry_files_enabled = False
 interpreter_python = auto_silent
 host_key_checking = False
 forks = 20
+${PRIVATE_KEY_CFG_LINE}
 
 [privilege_escalation]
 become = True
@@ -337,11 +402,8 @@ EOF
 
   cp -a "$SYSTEM_HOSTS" "$PROJECT_DIR/inventory/hosts"
 
-  # Мини-плейбук-пример с подсказками
   cat >"$PROJECT_DIR/playbooks/ping.yml" <<'EOF'
 ---
-# Подсказка: запуск из каталога проекта:
-#   cd /path/to/project && ansible-playbook playbooks/ping.yml
 - name: Проверка доступности узлов
   hosts: all
   gather_facts: false
@@ -352,9 +414,6 @@ EOF
 
   cat >"$PROJECT_DIR/playbooks/install-packages.yml" <<'EOF'
 ---
-# Пример установки пакетов на РЕД ОС через модуль dnf
-# Запуск: ansible-playbook playbooks/install-packages.yml -K
-# Подсказка: параметр name у dnf — это СПИСОК ПАКЕТОВ, не имя задачи.
 - name: Установка утилит
   hosts: servers
   become: true
@@ -369,54 +428,87 @@ EOF
         state: present
 EOF
 
-  ok "проект: $PROJECT_DIR (ansible.cfg, inventory/, playbooks/)"
-  hint "работайте из каталога проекта: cd $PROJECT_DIR"
+  ok "проект: $PROJECT_DIR"
 fi
 
-# --------------------------- SSH-ключ (опционально) ------------------------
-log "6/7 SSH-ключ"
+# --------------------------- SSH-ключ --------------------------------------
+log "7/8 SSH-ключ"
 if [[ "$GENERATE_SSH_KEY" -eq 1 ]]; then
-  # Определяем домашний каталог целевого пользователя
-  if ! id "$SSH_USER" >/dev/null 2>&1; then
-    die "пользователь --ssh-user=$SSH_USER не существует"
-  fi
-  SSH_HOME="$(getent passwd "$SSH_USER" | cut -d: -f6)"
-  [[ -n "$SSH_HOME" && -d "$SSH_HOME" ]] || die "не найден home для $SSH_USER"
-  SSH_DIR="${SSH_HOME}/.ssh"
-  KEY_PATH="${SSH_DIR}/id_ed25519"
+  if [[ "$SECURE_KEYS" -eq 1 ]]; then
+    # Ключ в защищённом каталоге, только KEY_OWNER
+    KEY_PATH="${KEY_DIR}/id_ed25519"
+    KEY_PUB="${KEY_PATH}.pub"
+    RUN_AS="$KEY_OWNER"
 
-  mkdir -p "$SSH_DIR"
-  chmod 700 "$SSH_DIR"
-  chown "$SSH_USER":"$SSH_USER" "$SSH_DIR"
-
-  if [[ -f "$KEY_PATH" && "$FORCE" -eq 0 ]]; then
-    ok "ключ уже есть: $KEY_PATH (не трогаем; --force для пересоздания)"
-  else
-    if [[ -f "$KEY_PATH" && "$FORCE" -eq 1 ]]; then
-      mv "$KEY_PATH" "${KEY_PATH}.bak.$(date +%Y%m%d%H%M%S)"
-      mv "${KEY_PATH}.pub" "${KEY_PATH}.pub.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+    if [[ -f "$KEY_PATH" && "$FORCE" -eq 0 ]]; then
+      ok "ключ уже есть: $KEY_PATH (не трогаем; --force для пересоздания)"
+    else
+      if [[ -f "$KEY_PATH" && "$FORCE" -eq 1 ]]; then
+        # Перемещение старого ключа в archive — делает владелец
+        TS="$(date +%Y%m%d%H%M%S)"
+        sudo -u "$KEY_OWNER" mv "$KEY_PATH" "${KEY_DIR}/archive/id_ed25519.${TS}"
+        [[ -f "$KEY_PUB" ]] && sudo -u "$KEY_OWNER" mv "$KEY_PUB" "${KEY_DIR}/archive/id_ed25519.pub.${TS}" || true
+        ok "старый ключ перемещён в ${KEY_DIR}/archive/"
+      fi
+      # Подсказка: ключ без passphrase удобен для автоматизации;
+      # для ещё большей защиты задайте passphrase и ssh-agent под KEY_OWNER.
+      sudo -u "$KEY_OWNER" ssh-keygen -t ed25519 \
+        -C "${KEY_OWNER}@$(hostname)-ansible-$(date -I)" \
+        -f "$KEY_PATH" -N ""
+      chmod 0600 "$KEY_PATH"
+      chmod 0640 "$KEY_PUB"
+      chown "$KEY_OWNER:$KEY_OWNER" "$KEY_PATH" "$KEY_PUB"
+      ok "создан защищённый ключ $KEY_PATH"
     fi
-    # Подсказка: ed25519 короче и современнее RSA; -N "" = без passphrase (удобно для автоматизации).
-    # Для повышенной безопасности задайте passphrase и ssh-agent.
-    sudo -u "$SSH_USER" ssh-keygen -t ed25519 \
-      -C "${SSH_USER}@$(hostname)-ansible-$(date -I)" \
-      -f "$KEY_PATH" -N ""
-    ok "создан ключ $KEY_PATH"
+  else
+    # Обычный режим: ~/.ssh
+    if ! id "$SSH_USER" >/dev/null 2>&1; then
+      die "пользователь --ssh-user=$SSH_USER не существует"
+    fi
+    SSH_HOME="$(getent passwd "$SSH_USER" | cut -d: -f6)"
+    [[ -n "$SSH_HOME" && -d "$SSH_HOME" ]] || die "не найден home для $SSH_USER"
+    SSH_DIR="${SSH_HOME}/.ssh"
+    KEY_PATH="${SSH_DIR}/id_ed25519"
+    KEY_PUB="${KEY_PATH}.pub"
+    RUN_AS="$SSH_USER"
+
+    mkdir -p "$SSH_DIR"
+    chmod 700 "$SSH_DIR"
+    chown "$SSH_USER:$SSH_USER" "$SSH_DIR"
+
+    if [[ -f "$KEY_PATH" && "$FORCE" -eq 0 ]]; then
+      ok "ключ уже есть: $KEY_PATH (не трогаем; --force для пересоздания)"
+    else
+      if [[ -f "$KEY_PATH" && "$FORCE" -eq 1 ]]; then
+        mv "$KEY_PATH" "${KEY_PATH}.bak.$(date +%Y%m%d%H%M%S)"
+        mv "${KEY_PATH}.pub" "${KEY_PATH}.pub.bak.$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+      fi
+      sudo -u "$SSH_USER" ssh-keygen -t ed25519 \
+        -C "${SSH_USER}@$(hostname)-ansible-$(date -I)" \
+        -f "$KEY_PATH" -N ""
+      ok "создан ключ $KEY_PATH"
+    fi
   fi
-  hint "скопируйте публичный ключ на узлы:"
-  printf '      ssh-copy-id -i %s.pub %s@<ХОСТ>\n' "$KEY_PATH" "${REMOTE_USER:-$SSH_USER}"
-  if [[ -f "${KEY_PATH}.pub" ]]; then
-    printf '\n    Публичный ключ (%s.pub):\n' "$KEY_PATH"
-    sed 's/^/      /' "${KEY_PATH}.pub"
+
+  hint "скопируйте публичный ключ на узлы от имени владельца ключа:"
+  printf '      sudo -u %s ssh-copy-id -i %s %s@<ХОСТ>\n' \
+    "${RUN_AS}" "${KEY_PUB}" "${REMOTE_USER:-user}"
+  if [[ -f "$KEY_PUB" ]]; then
+    printf '\n    Публичный ключ (%s):\n' "$KEY_PUB"
+    sed 's/^/      /' "$KEY_PUB"
   fi
 else
-  hint "ключ не создавался (добавьте --generate-ssh-key). Без ключа можно: ansible all -m ping -k"
+  hint "ключ не создавался. Варианты: --generate-ssh-key или --secure-keys"
 fi
 
 # --------------------------- финальная проверка ----------------------------
-log "7/7 Быстрая самопроверка"
-# localhost с ansible_connection=local не требует SSH
-if ansible localhost -m ping >/tmp/ansible-localhost-ping.out 2>&1; then
+log "8/8 Быстрая самопроверка"
+PING_CMD=(ansible localhost -m ping)
+if [[ "$SECURE_KEYS" -eq 1 ]]; then
+  # Под пользователем-владельцем ключей (у него есть доступ к private_key_file)
+  PING_CMD=(sudo -u "$KEY_OWNER" -H ansible localhost -m ping)
+fi
+if "${PING_CMD[@]}" >/tmp/ansible-localhost-ping.out 2>&1; then
   ok "ansible localhost -m ping → SUCCESS"
   sed 's/^/    /' /tmp/ansible-localhost-ping.out || true
 else
@@ -426,6 +518,32 @@ fi
 rm -f /tmp/ansible-localhost-ping.out
 
 # --------------------------- чеклист ---------------------------------------
+SECURE_BLOCK=""
+if [[ "$SECURE_KEYS" -eq 1 ]]; then
+  SECURE_BLOCK=$(cat <<EOF
+
+Защищённые ключи:
+  Каталог:   $KEY_DIR   (chmod 0700)
+  Владелец:  $KEY_OWNER  — единственный обычный пользователь с доступом
+  Приватный: $KEY_PATH
+  Публичный: $KEY_PUB
+  Архив:     $KEY_DIR/archive/
+
+  Запуск Ansible:
+    sudo -u $KEY_OWNER -H ansible all -m ping
+    sudo -u $KEY_OWNER -H ansible-playbook playbook.yml
+
+  Разложить ключ на узел:
+    sudo -u $KEY_OWNER ssh-copy-id -i $KEY_PUB ${REMOTE_USER:-user}@<ХОСТ>
+
+  Переместить ключ (только $KEY_OWNER):
+    sudo -u $KEY_OWNER mv $KEY_PATH $KEY_DIR/archive/id_ed25519.\$(date +%Y%m%d)
+
+  Ограничение: root по-прежнему видит файлы — это норма для Linux без HSM/шифрования.
+EOF
+)
+fi
+
 cat <<EOF
 
 ==============================================================================
@@ -436,35 +554,29 @@ cat <<EOF
 Конфиг:     $SYSTEM_CFG
 Inventory:  $SYSTEM_HOSTS
 $( [[ -n "$PROJECT_DIR" ]] && echo "Проект:     $PROJECT_DIR" )
+$SECURE_BLOCK
 
 Что сделать дальше (чеклист):
 
   1. Допишите управляемые узлы в inventory (если ещё не указали --hosts):
        sudo nano $SYSTEM_HOSTS
 
-  2. Разложите SSH-ключ на каждый узел:
-       ssh-copy-id -i ~/.ssh/id_ed25519.pub ${REMOTE_USER:-user}@<ХОСТ>
-     Подсказка: пользователь должен совпадать с ansible_user в inventory.
+  2. Разложите SSH-ключ на каждый узел (см. команды выше).
 
   3. Проверьте связь:
-       ansible all -m ping
-       ansible servers -m ping
-     По паролю (если нет ключа):
-       ansible all -m ping -k
-     Если sudo на узле с паролем:
-       ansible all -m ping -K
+$( if [[ "$SECURE_KEYS" -eq 1 ]]; then
+     echo "       sudo -u $KEY_OWNER -H ansible all -m ping"
+   else
+     echo "       ansible all -m ping"
+   fi )
 
-  4. Ad-hoc команда:
-       ansible servers -a "uptime"
-
-  5. Плейбук (пример из docs/ansible-redos.md):
-       ansible-playbook playbook.yml
-       ansible-playbook --syntax-check playbook.yml
+  4. Ad-hoc / плейбук — см. docs/ansible-redos.md
 
 Подсказки по безопасности:
+  • --secure-keys изолирует ключи от других пользователей ОС.
   • Не оставляйте host_key_checking=False в открытом интернете без необходимости.
-  • Файлы с паролями/vault-секретами храните отдельно (ansible-vault).
-  • На узлах лучше NOPASSWD sudo только для нужной группы команд / пользователя автоматизации.
+  • Секреты плейбуков — через ansible-vault.
+  • На узлах — минимальный sudo для пользователя автоматизации.
 
 Документация в репозитории: docs/ansible-redos.md
 Справка скрипта:            $0 --help

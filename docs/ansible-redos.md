@@ -27,16 +27,17 @@ Ansible — система управления конфигурациями: о
 4. [Проверка установки](#проверка-установки)
 5. [Инвентаризация (hosts)](#инвентаризация-hosts)
 6. [SSH-ключи на управляемые узлы](#ssh-ключи-на-управляемые-узлы)
-7. [Проверка связи (ping)](#проверка-связи-ping)
-8. [Аутентификация по паролю](#аутентификация-по-паролю)
-9. [Собственные inventory](#собственные-inventory)
-10. [Одиночные команды](#одиночные-команды)
-11. [Плейбук: пример](#плейбук-пример)
-12. [Привилегии become / sudo](#привилегии-become--sudo)
-13. [Проверка синтаксиса](#проверка-синтаксиса)
-14. [Базовый ansible.cfg](#базовый-ansiblecfg)
-15. [Типичные проблемы](#типичные-проблемы)
-16. [Готовый скрипт](#готовый-скрипт)
+7. [Защищённый каталог ключей (один владелец)](#защищённый-каталог-ключей-один-владелец)
+8. [Проверка связи (ping)](#проверка-связи-ping)
+9. [Аутентификация по паролю](#аутентификация-по-паролю)
+10. [Собственные inventory](#собственные-inventory)
+11. [Одиночные команды](#одиночные-команды)
+12. [Плейбук: пример](#плейбук-пример)
+13. [Привилегии become / sudo](#привилегии-become--sudo)
+14. [Проверка синтаксиса](#проверка-синтаксиса)
+15. [Базовый ansible.cfg](#базовый-ansiblecfg)
+16. [Типичные проблемы](#типичные-проблемы)
+17. [Готовый скрипт](#готовый-скрипт)
 
 ---
 
@@ -197,6 +198,63 @@ ssh user@192.168.0.100 'hostname && python3 --version'
 ```
 
 > Подробнее про SSH-ключи — в документации РЕД ОС по аутентификации SSH.
+
+---
+
+## Защищённый каталог ключей (один владелец)
+
+Обычный `~/.ssh` доступен владельцу домашнего каталога. Если нужно **изолировать ключи** так, чтобы их мог читать и перемещать только **один** пользователь ОС — используйте режим `--secure-keys`.
+
+### Что создаётся
+
+| Объект | Значение по умолчанию |
+|---|---|
+| Каталог | `/var/lib/ansible-keys` (`chmod 0700`) |
+| Владелец | пользователь `ansible-keys` (создаётся скриптом, пароль заблокирован) |
+| Приватный ключ | `/var/lib/ansible-keys/id_ed25519` (`chmod 600`) |
+| Публичный ключ | `/var/lib/ansible-keys/id_ed25519.pub` |
+| Архив старых ключей | `/var/lib/ansible-keys/archive/` |
+| В `ansible.cfg` | `private_key_file = /var/lib/ansible-keys/id_ed25519` |
+
+Другие **обычные** пользователи системы в каталог не зайдут и ключи не скопируют/не переместят.  
+**Ограничение Linux:** пользователь `root` по-прежнему может читать любые файлы. Полная защита от root — только HSM / шифрование с секретом вне этой машины.
+
+### Установка
+
+```bash
+sudo ./scripts/install-ansible-redos.sh --secure-keys \
+  --hosts '192.168.1.10,192.168.1.11' \
+  --remote-user admin
+```
+
+Свои пути/владелец:
+
+```bash
+sudo ./scripts/install-ansible-redos.sh --secure-keys \
+  --key-dir /var/lib/ansible-keys \
+  --key-owner ansible-keys
+```
+
+Или отдельной командой после установки — см. [`scripts/ansible-keys-secure-setup.sh`](../scripts/ansible-keys-secure-setup.sh).
+
+### Работа только от владельца ключей
+
+```bash
+# Ansible
+sudo -u ansible-keys -H ansible all -m ping
+sudo -u ansible-keys -H ansible-playbook playbook.yml
+
+# Разложить публичный ключ на узел
+sudo -u ansible-keys ssh-copy-id \
+  -i /var/lib/ansible-keys/id_ed25519.pub admin@192.168.1.10
+
+# Переместить (ротация) ключа — только ansible-keys
+sudo -u ansible-keys mv \
+  /var/lib/ansible-keys/id_ed25519 \
+  /var/lib/ansible-keys/archive/id_ed25519.$(date +%Y%m%d)
+```
+
+Вспомогательные команды: [`scripts/ansible-keys-ctl.sh`](../scripts/ansible-keys-ctl.sh) (`list`, `move-archive`, `show-pub`).
 
 ---
 
@@ -420,11 +478,16 @@ sudo ./scripts/install-ansible-redos.sh
 # РЕД ОС 7.3, Ansible 6.x
 sudo ./scripts/install-ansible-redos.sh --ansible6
 
-# сразу прописать хосты в inventory
+# сразу прописать хосты в inventory + обычный ключ в ~/.ssh
 sudo ./scripts/install-ansible-redos.sh \
   --hosts '192.168.0.100,192.168.0.101' \
   --remote-user admin \
   --generate-ssh-key
+
+# защищённый каталог ключей (один владелец ansible-keys)
+sudo ./scripts/install-ansible-redos.sh --secure-keys \
+  --hosts '192.168.0.100,192.168.0.101' \
+  --remote-user admin
 ```
 
 Справка: `./scripts/install-ansible-redos.sh --help`.
@@ -432,8 +495,8 @@ sudo ./scripts/install-ansible-redos.sh \
 После скрипта:
 
 1. при необходимости допишите хосты в `/etc/ansible/hosts` или `./inventory/hosts`;
-2. разложите ключ: `ssh-copy-id user@host`;
-3. проверьте: `ansible all -m ping`.
+2. разложите ключ: `ssh-copy-id` (в режиме `--secure-keys` — от `ansible-keys`);
+3. проверьте: `ansible all -m ping` (или `sudo -u ansible-keys -H ansible all -m ping`).
 
 ---
 
