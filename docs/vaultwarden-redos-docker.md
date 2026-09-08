@@ -437,36 +437,38 @@ http://192.168.1.50
 connect() failed (113: Host is unreachable) while connecting to upstream, upstream: "http://172.x.x.x:80/"
 ```
 
-Значит nginx жив, а контейнер **Vaultwarden** недоступен (упал, сменил IP, или **firewalld режет Docker-сеть** на РЕД ОС).
+Значит nginx жив, а до контейнера Vaultwarden по Docker-сети `172.18.0.x` доступа нет (на РЕД ОС так часто делает **firewalld**). Vaultwarden при этом может быть запущен (`Rocket has launched`).
+
+### Быстрый фикс (рекомендуется)
 
 ```bash
-cd /opt/vaultwarden
-sudo docker compose ps
-sudo docker compose logs --tail=50 vaultwarden
+chmod +x scripts/fix-vaultwarden-502-host-gateway.sh
+sudo ./scripts/fix-vaultwarden-502-host-gateway.sh
+```
 
-# 1) починить firewalld для Docker bridge (частая причина на РЕД ОС)
+Скрипт переведёт схему на: nginx → `host.docker.internal` → `127.0.0.1:8787` → Vaultwarden (минуя сломанную Docker-сеть).
+
+Проверка:
+
+```bash
+curl -sI http://127.0.0.1:8787/ | head
+sudo docker exec vaultwarden-nginx wget -qO- http://host.docker.internal:8787/ | head
+```
+
+Затем снова: `https://vaultwarden.cloud.novatek.ru:8443/` или `https://10.0.50.114:8443/`.
+
+### Альтернатива: firewalld
+
+```bash
 sudo firewall-cmd --permanent --zone=public --add-masquerade
 sudo firewall-cmd --permanent --zone=trusted --add-interface=docker0
 sudo firewall-cmd --permanent --zone=trusted --add-source=172.16.0.0/12
 sudo firewall-cmd --reload
 sudo systemctl restart docker
-
-# 2) поднять стек заново
-cd /opt/vaultwarden
-sudo docker compose up -d
-sudo docker compose ps
-
-# 3) проверка связи nginx → vaultwarden
-sudo docker exec vaultwarden-nginx wget -qO- http://vaultwarden:80/ | head
-
-# сети контейнеров должны совпадать
-sudo docker inspect vaultwarden --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{$v.IPAddress}}{{"\n"}}{{end}}'
-sudo docker inspect vaultwarden-nginx --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{$v.IPAddress}}{{"\n"}}{{end}}'
+cd /opt/vaultwarden && sudo docker compose up -d
 ```
 
-Если `wget` из nginx всё ещё `Host is unreachable` — пришлите вывод двух `docker inspect` выше.
-
-Если `vaultwarden` в статусе `Exit`/`Restarting` — смотрите его логи. После починки откройте снова `https://vaultwarden.cloud.novatek.ru:8443/` (без `//`).
+Если после firewalld `wget http://vaultwarden:80` из nginx всё ещё `Host is unreachable` — используйте быстрый фикс выше.
 
 ### Порты 80/443 уже заняты
 

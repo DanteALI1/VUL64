@@ -24,6 +24,7 @@ IMAGE="vaultwarden/server:latest"
 SIGNUPS_ALLOWED="true"
 HTTP_PORT=8080          # не 80 — часто занят nginx HashiCorp Vault
 HTTPS_PORT=8443         # не 443 — то же
+BACKEND_PORT=8787       # vaultwarden на 127.0.0.1 (обход firewalld bridge)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CERT_SCRIPT="${SCRIPT_DIR}/create-vaultwarden-ssl-cert.sh"
 ADMIN_TOKEN=""
@@ -48,6 +49,7 @@ usage() {
                               http  = только HTTP-порт (LAN)
   --http-port N               хост-порт HTTP (по умолчанию 8080)
   --https-port N              хост-порт HTTPS (по умолчанию 8443)
+  --backend-port N            локальный порт Vaultwarden 127.0.0.1 (по умолчанию 8787)
   --cert-mode ca|selfsigned   самоподписанный cert (если нет своих файлов)
   --cert-file PATH            готовый сертификат/fullchain от УЦ
   --key-file PATH             готовый ключ от УЦ
@@ -83,6 +85,7 @@ while [[ $# -gt 0 ]]; do
     --access) ACCESS="${2:-}"; shift 2 ;;
     --http-port) HTTP_PORT="${2:-}"; shift 2 ;;
     --https-port) HTTPS_PORT="${2:-}"; shift 2 ;;
+    --backend-port) BACKEND_PORT="${2:-}"; shift 2 ;;
     --cert-mode) CERT_MODE="${2:-}"; shift 2 ;;
     --cert-file) CERT_FILE="${2:-}"; shift 2 ;;
     --key-file) KEY_FILE="${2:-}"; shift 2 ;;
@@ -103,6 +106,7 @@ case "$ACCESS" in https|http) ;; *) die "--access: https|http" ;; esac
 case "$CERT_MODE" in ca|selfsigned) ;; *) die "--cert-mode: ca|selfsigned" ;; esac
 [[ "$HTTP_PORT" =~ ^[0-9]+$ ]] || die "--http-port должен быть числом"
 [[ "$HTTPS_PORT" =~ ^[0-9]+$ ]] || die "--https-port должен быть числом"
+[[ "$BACKEND_PORT" =~ ^[0-9]+$ ]] || die "--backend-port должен быть числом"
 
 http_url() {
   local host="${IP:-$FQDN}"
@@ -284,12 +288,14 @@ write_https_stack() {
   local domain
   domain="$(https_url)"
 
-  # Внутри контейнера nginx всегда слушает 80/443; на хост маппятся HTTP_PORT/HTTPS_PORT
+  # Vaultwarden слушает только 127.0.0.1:BACKEND_PORT на хосте.
+  # nginx ходит туда через host.docker.internal — так не ломается firewalld
+  # на РЕД ОС (иначе типичный 502: Host is unreachable до 172.18.0.x).
   cat > "${INSTALL_ROOT}/nginx/nginx.conf" <<EOF
 worker_processes auto;
 events { worker_connections 1024; }
 http {
-    # Docker embedded DNS — чтобы nginx не держал старый IP vaultwarden
+    # Docker DNS + host-gateway
     resolver 127.0.0.11 valid=10s ipv6=off;
 
     map \$http_upgrade \$connection_upgrade {
@@ -310,7 +316,7 @@ http {
         ssl_protocols       TLSv1.2 TLSv1.3;
         client_max_body_size 128M;
         location / {
-            set \$vw_upstream vaultwarden;
+            set \$vw_upstream host.docker.internal;
             proxy_http_version 1.1;
             proxy_set_header Host \$host;
             proxy_set_header X-Real-IP \$remote_addr;
@@ -318,7 +324,7 @@ http {
             proxy_set_header X-Forwarded-Proto \$scheme;
             proxy_set_header Upgrade \$http_upgrade;
             proxy_set_header Connection \$connection_upgrade;
-            proxy_pass http://\$vw_upstream:80;
+            proxy_pass http://\$vw_upstream:${BACKEND_PORT};
             proxy_connect_timeout 5s;
             proxy_read_timeout 300s;
         }
@@ -338,8 +344,8 @@ services:
       ADMIN_TOKEN: "${ADMIN_TOKEN}"
     volumes:
       - ./data:/data
-    networks:
-      - vwnet
+    ports:
+      - "127.0.0.1:${BACKEND_PORT}:80"
 
   nginx:
     image: nginx:alpine
@@ -350,14 +356,11 @@ services:
     ports:
       - "${HTTP_PORT}:80"
       - "${HTTPS_PORT}:443"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
       - ./ssl:/etc/nginx/certs:ro
-    networks:
-      - vwnet
-
-networks:
-  vwnet:
 EOF
 }
 
@@ -420,18 +423,23 @@ start_stack() {
   sleep 3
   docker compose ps
 
-  # проверка, что vaultwarden реально отвечает внутри сети
+  # проверка, что vaultwarden реально отвечает
   local i
   for i in $(seq 1 20); do
-    if docker compose exec -T vaultwarden curl -fsS http://127.0.0.1:80/ >/dev/null 2>&1 \
-       || docker compose exec -T nginx wget -qO- http://vaultwarden:80/ >/dev/null 2>&1; then
-      ok "Vaultwarden отвечает upstream'у"
+    if curl -fsS "http://127.0.0.1:${BACKEND_PORT}/" >/dev/null 2>&1 \
+       || wget -qO- "http://127.0.0.1:${BACKEND_PORT}/" >/dev/null 2>&1; then
+      ok "Vaultwarden отвечает на 127.0.0.1:${BACKEND_PORT}"
+      break
+    fi
+    # из nginx через host-gateway
+    if docker compose exec -T nginx wget -qO- "http://host.docker.internal:${BACKEND_PORT}/" >/dev/null 2>&1; then
+      ok "Vaultwarden доступен nginx через host.docker.internal"
       break
     fi
     sleep 1
     if [[ "$i" -eq 20 ]]; then
       docker compose logs --tail=40 vaultwarden || true
-      die "Vaultwarden не отвечает (502 будет от nginx). Смотрите логи выше."
+      die "Vaultwarden не отвечает на 127.0.0.1:${BACKEND_PORT}. Смотрите логи выше."
     fi
   done
   ok "стек запущен"

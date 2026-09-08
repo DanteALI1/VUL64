@@ -26,6 +26,7 @@
 - [**Удаление Vaultwarden — от и до**](docs/vaultwarden-uninstall-redos.md)
 - Скрипт «всё сразу»: [`scripts/install-vaultwarden-redos.sh`](scripts/install-vaultwarden-redos.sh)
 - **Скрипт удаления:** [`scripts/uninstall-vaultwarden-redos.sh`](scripts/uninstall-vaultwarden-redos.sh)
+- Фикс 502 / Host is unreachable: [`scripts/fix-vaultwarden-502-host-gateway.sh`](scripts/fix-vaultwarden-502-host-gateway.sh)
 - Самоподписанный SSL: [`scripts/create-vaultwarden-ssl-cert.sh`](scripts/create-vaultwarden-ssl-cert.sh)
 - Готовые cert (Vaultwarden / оба): [`scripts/install-existing-ssl-cert.sh`](scripts/install-existing-ssl-cert.sh)
 
