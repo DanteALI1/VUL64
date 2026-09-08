@@ -394,8 +394,20 @@ setup_firewall() {
       firewall-cmd --permanent --add-port="${HTTPS_PORT}/tcp" || true
     fi
   fi
+
+  # РЕД ОС / RHEL: без этого контейнеры в user-defined сети часто
+  # получают "Host is unreachable" друг к другу (nginx → vaultwarden = 502)
+  firewall-cmd --permanent --zone=public --add-masquerade || true
+  firewall-cmd --permanent --zone=trusted --add-interface=docker0 || true
+  # подсети Docker bridge (в т.ч. compose-сети 172.16.0.0/12)
+  firewall-cmd --permanent --zone=trusted --add-source=172.16.0.0/12 || true
+  firewall-cmd --permanent --zone=trusted --add-source=192.168.0.0/16 || true
+
   firewall-cmd --reload || true
-  ok "правила применены"
+  # docker должен пересобрать iptables после firewalld
+  systemctl restart docker 2>/dev/null || true
+  sleep 2
+  ok "правила применены (+ docker bridge trusted)"
 }
 
 start_stack() {

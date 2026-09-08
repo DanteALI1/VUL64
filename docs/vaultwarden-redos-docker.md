@@ -437,21 +437,34 @@ http://192.168.1.50
 connect() failed (113: Host is unreachable) while connecting to upstream, upstream: "http://172.x.x.x:80/"
 ```
 
-Значит nginx жив, а контейнер **Vaultwarden** недоступен (упал или сменил IP).
+Значит nginx жив, а контейнер **Vaultwarden** недоступен (упал, сменил IP, или **firewalld режет Docker-сеть** на РЕД ОС).
 
 ```bash
 cd /opt/vaultwarden
 sudo docker compose ps
 sudo docker compose logs --tail=50 vaultwarden
 
-# пересоздать оба контейнера в одной сети
-sudo docker compose down
+# 1) починить firewalld для Docker bridge (частая причина на РЕД ОС)
+sudo firewall-cmd --permanent --zone=public --add-masquerade
+sudo firewall-cmd --permanent --zone=trusted --add-interface=docker0
+sudo firewall-cmd --permanent --zone=trusted --add-source=172.16.0.0/12
+sudo firewall-cmd --reload
+sudo systemctl restart docker
+
+# 2) поднять стек заново
+cd /opt/vaultwarden
 sudo docker compose up -d
 sudo docker compose ps
 
-# проверка связи nginx → vaultwarden
+# 3) проверка связи nginx → vaultwarden
 sudo docker exec vaultwarden-nginx wget -qO- http://vaultwarden:80/ | head
+
+# сети контейнеров должны совпадать
+sudo docker inspect vaultwarden --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{$v.IPAddress}}{{"\n"}}{{end}}'
+sudo docker inspect vaultwarden-nginx --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{$v.IPAddress}}{{"\n"}}{{end}}'
 ```
+
+Если `wget` из nginx всё ещё `Host is unreachable` — пришлите вывод двух `docker inspect` выше.
 
 Если `vaultwarden` в статусе `Exit`/`Restarting` — смотрите его логи. После починки откройте снова `https://vaultwarden.cloud.novatek.ru:8443/` (без `//`).
 
